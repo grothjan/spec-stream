@@ -161,6 +161,14 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
     for (const diff of diffs) {
       if (diff.status === "delete") continue; // deletes remove from manifest — sync handles this
 
+      // Skip if any operation for this entity failed. This ensures the next sync-back
+      // run retries the failed operations rather than silently treating the entity as
+      // up-to-date (which would happen if we advanced the content hash here).
+      if (execResult.failedEntityDirs.has(diff.entityDir)) {
+        debug(`Skipping manifest update for ${diff.entityDir} (operation failed — will retry next run)`);
+        continue;
+      }
+
       const id = diff.id ?? execResult.newIds.get(diff.entityDir);
       if (!id) continue; // create failed — no id returned, skip
 

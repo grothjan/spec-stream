@@ -33,6 +33,12 @@ export interface ExecuteResult {
    * Value: the UUID returned by the prooph board API.
    */
   newIds: Map<string, string>;
+  /**
+   * Set of entityDirs for which at least one operation failed.
+   * Used by sync-back to skip writing the manifest entry for that entity,
+   * so the next run retries the failed operations rather than silently skipping them.
+   */
+  failedEntityDirs: Set<string>;
 }
 
 /**
@@ -47,7 +53,7 @@ export async function executeOperations(
   operations: SyncBackOperation[],
   opts: ExecuteOptions,
 ): Promise<ExecuteResult> {
-  const result: ExecuteResult = { executed: 0, skipped: 0, failed: 0, errors: [], newIds: new Map() };
+  const result: ExecuteResult = { executed: 0, skipped: 0, failed: 0, errors: [], newIds: new Map(), failedEntityDirs: new Set() };
 
   for (const op of operations) {
     const label = describeOperation(op);
@@ -70,6 +76,7 @@ export async function executeOperations(
       opts.log(`✗ ${label}: ${msg}`);
       result.failed++;
       result.errors.push({ operation: op, error: msg });
+      result.failedEntityDirs.add(op.entityDir);
     }
   }
 

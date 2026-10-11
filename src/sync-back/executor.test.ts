@@ -47,6 +47,7 @@ describe("executeOperations", () => {
     expect(result.executed).toBe(0);
     expect(result.skipped).toBe(0);
     expect(result.failed).toBe(0);
+    expect(result.failedEntityDirs.size).toBe(0);
   });
 
   it("executes element.update-description", async () => {
@@ -57,6 +58,7 @@ describe("executeOperations", () => {
         chapterId: "chap-1",
         elementId: "elem-1",
         newDescription: "Hello",
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E",
       },
     ];
     const { dryRun, log } = makeOpts();
@@ -74,7 +76,13 @@ describe("executeOperations", () => {
   it("executes element.update-details", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "element.update-details", chapterId: "chap-1", elementId: "elem-1", newDetails: "Detail text" },
+      {
+        kind: "element.update-details",
+        chapterId: "chap-1",
+        elementId: "elem-1",
+        newDetails: "Detail text",
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -88,7 +96,13 @@ describe("executeOperations", () => {
   it("executes slice.update-details", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "slice.update-details", chapterId: "chap-1", sliceId: "slice-1", newDetails: "Notes" },
+      {
+        kind: "slice.update-details",
+        chapterId: "chap-1",
+        sliceId: "slice-1",
+        newDetails: "Notes",
+        entityDir: "chapters/App/Ch/slices/0001_S",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -102,7 +116,13 @@ describe("executeOperations", () => {
   it("executes chapter.create", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "chapter.create", name: "My Chapter", context: "App", mode: "event-modeling" },
+      {
+        kind: "chapter.create",
+        name: "My Chapter",
+        context: "App",
+        mode: "event-modeling",
+        entityDir: "chapters/App/My Chapter",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -116,7 +136,14 @@ describe("executeOperations", () => {
   it("executes milestone.create", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "milestone.create", name: "M1", description: "desc", deadline: "2026-12-31", color: "#3b82f6" },
+      {
+        kind: "milestone.create",
+        name: "M1",
+        description: "desc",
+        deadline: "2026-12-31",
+        color: "#3b82f6",
+        entityDir: "milestones/M1",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -130,7 +157,7 @@ describe("executeOperations", () => {
   it("executes milestone.update via PATCH", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "milestone.update", milestoneId: "ms-1", name: "New Name" },
+      { kind: "milestone.update", milestoneId: "ms-1", name: "New Name", entityDir: "milestones/M1" },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -144,7 +171,12 @@ describe("executeOperations", () => {
   it("executes element.delete via DELETE", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "element.delete", chapterId: "chap-1", elementId: "elem-1" },
+      {
+        kind: "element.delete",
+        chapterId: "chap-1",
+        elementId: "elem-1",
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -164,6 +196,7 @@ describe("executeOperations", () => {
         newLaneId: "lane-2",
         newSliceId: "slice-2",
         newIndex: 3,
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E",
       },
     ];
     const { dryRun, log } = makeOpts();
@@ -184,6 +217,7 @@ describe("executeOperations", () => {
         elementId: "elem-1",
         playFunction: "async () => ({})",
         playType: "{ input: string }",
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E",
       },
     ];
     const { dryRun, log } = makeOpts();
@@ -198,7 +232,7 @@ describe("executeOperations", () => {
   it("URL-encodes IDs with special characters", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "chapter.rename", chapterId: "chap/with space", newName: "New" },
+      { kind: "chapter.rename", chapterId: "chap/with space", newName: "New", entityDir: "chapters/App/Ch" },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -209,9 +243,10 @@ describe("executeOperations", () => {
 
   it("dry-run logs operations without calling the API", async () => {
     const client = makeMockClient();
+    const entityDir = "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E";
     const ops: SyncBackOperation[] = [
-      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X" },
-      { kind: "element.update-details", chapterId: "chap-1", elementId: "elem-1", newDetails: "Y" },
+      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X", entityDir },
+      { kind: "element.update-details", chapterId: "chap-1", elementId: "elem-1", newDetails: "Y", entityDir },
     ];
     const { dryRun, log, logs } = makeOpts(true);
     const result = await executeOperations(client, ops, { dryRun, log });
@@ -232,9 +267,10 @@ describe("executeOperations", () => {
       return {};
     });
 
+    const entityDir = "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E";
     const ops: SyncBackOperation[] = [
-      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X" },
-      { kind: "element.update-details", chapterId: "chap-1", elementId: "elem-1", newDetails: "Y" },
+      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X", entityDir },
+      { kind: "element.update-details", chapterId: "chap-1", elementId: "elem-1", newDetails: "Y", entityDir },
     ];
     const { dryRun, log } = makeOpts();
     const result = await executeOperations(client, ops, { dryRun, log });
@@ -244,12 +280,62 @@ describe("executeOperations", () => {
     expect(result.errors[0].error).toBe("API error");
   });
 
+  it("adds entityDir to failedEntityDirs when an operation fails", async () => {
+    const client = makeMockClient();
+    vi.spyOn(client, "postJson").mockRejectedValueOnce(new Error("network error"));
+
+    const failingDir = "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E";
+    const succeedingDir = "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0002_F";
+    const ops: SyncBackOperation[] = [
+      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X", entityDir: failingDir },
+      { kind: "element.update-details", chapterId: "chap-1", elementId: "elem-2", newDetails: "Y", entityDir: succeedingDir },
+    ];
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    expect(result.failedEntityDirs.has(failingDir)).toBe(true);
+    expect(result.failedEntityDirs.has(succeedingDir)).toBe(false);
+    expect(result.failedEntityDirs.size).toBe(1);
+  });
+
+  it("collects all distinct failing entityDirs across multiple failures", async () => {
+    const client = makeMockClient();
+    vi.spyOn(client, "postJson").mockRejectedValue(new Error("always fails"));
+
+    const dir1 = "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E";
+    const dir2 = "chapters/App/Ch/slices/0002_T/lanes/system/L/elements/0001_G";
+    const ops: SyncBackOperation[] = [
+      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X", entityDir: dir1 },
+      { kind: "element.update-details",     chapterId: "chap-1", elementId: "elem-1", newDetails: "Y",     entityDir: dir1 },
+      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-2", newDescription: "Z", entityDir: dir2 },
+    ];
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    expect(result.failed).toBe(3);
+    expect(result.failedEntityDirs.size).toBe(2);
+    expect(result.failedEntityDirs.has(dir1)).toBe(true);
+    expect(result.failedEntityDirs.has(dir2)).toBe(true);
+  });
+
+  it("does not add to failedEntityDirs when all operations succeed", async () => {
+    const client = makeMockClient();
+    const entityDir = "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E";
+    const ops: SyncBackOperation[] = [
+      { kind: "element.update-description", chapterId: "chap-1", elementId: "elem-1", newDescription: "X", entityDir },
+    ];
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    expect(result.failedEntityDirs.size).toBe(0);
+  });
+
   // ─── Chapter operations ───────────────────────────────────────────────────
 
   it("executes chapter.rename", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "chapter.rename", chapterId: "chap-1", newName: "New Name" },
+      { kind: "chapter.rename", chapterId: "chap-1", newName: "New Name", entityDir: "chapters/App/Ch" },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -263,7 +349,7 @@ describe("executeOperations", () => {
   it("executes chapter.update-context via PATCH", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "chapter.update-context", chapterId: "chap-1", newContext: "Payments" },
+      { kind: "chapter.update-context", chapterId: "chap-1", newContext: "Payments", entityDir: "chapters/Payments/Ch" },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -277,7 +363,13 @@ describe("executeOperations", () => {
   it("executes lane.rename with lane_id in body", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "lane.rename", chapterId: "chap-1", laneId: "lane-1", newLabel: "New Lane" },
+      {
+        kind: "lane.rename",
+        chapterId: "chap-1",
+        laneId: "lane-1",
+        newLabel: "New Lane",
+        entityDir: "chapters/App/Ch/lanes/user-lane/New Lane",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });
@@ -291,7 +383,13 @@ describe("executeOperations", () => {
   it("executes slice.update-status", async () => {
     const client = makeMockClient();
     const ops: SyncBackOperation[] = [
-      { kind: "slice.update-status", chapterId: "chap-1", sliceId: "slice-1", newStatus: "planned" },
+      {
+        kind: "slice.update-status",
+        chapterId: "chap-1",
+        sliceId: "slice-1",
+        newStatus: "planned",
+        entityDir: "chapters/App/Ch/slices/0001_S",
+      },
     ];
     const { dryRun, log } = makeOpts();
     await executeOperations(client, ops, { dryRun, log });

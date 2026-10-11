@@ -166,40 +166,40 @@ export interface ScenarioJson {
 }
 
 export type SyncBackOperation =
-  | { kind: "chapter.create"; name: string; context?: string; mode?: string; entityDir?: string }
-  | { kind: "chapter.rename"; chapterId: string; newName: string }
-  | { kind: "chapter.update-context"; chapterId: string; newContext: string }
-  | { kind: "chapter.delete"; chapterId: string }
-  | { kind: "lane.create"; chapterId: string; label: string; type: string; index: number; height?: number; entityDir?: string }
-  | { kind: "lane.rename"; chapterId: string; laneId: string; newLabel: string }
-  | { kind: "lane.update-details"; chapterId: string; laneId: string; newDetails: string }
-  | { kind: "lane.resize"; chapterId: string; laneId: string; newHeight: number }
-  | { kind: "lane.delete"; chapterId: string; laneId: string }
-  | { kind: "slice.create"; chapterId: string; label: string; index?: number; status?: string; details?: string; width?: number; entityDir?: string }
-  | { kind: "slice.rename"; chapterId: string; sliceId: string; newLabel: string }
-  | { kind: "slice.update-details"; chapterId: string; sliceId: string; newDetails: string }
-  | { kind: "slice.update-status"; chapterId: string; sliceId: string; newStatus: string }
-  | { kind: "slice.delete"; chapterId: string; sliceId: string }
-  | { kind: "element.create"; chapterId: string; name: string; type: string; laneId: string; sliceId: string; description?: string; details?: string; index?: number; context?: string; entityDir?: string }
-  | { kind: "element.rename"; chapterId: string; elementId: string; newName: string }
-  | { kind: "element.update-description"; chapterId: string; elementId: string; newDescription: string }
-  | { kind: "element.update-details"; chapterId: string; elementId: string; newDetails: string }
-  | { kind: "element.update-config"; chapterId: string; elementId: string; playFunction?: string; playType?: string }
-  | { kind: "element.move"; chapterId: string; elementId: string; newLaneId: string; newSliceId: string; newIndex: number }
-  | { kind: "element.delete"; chapterId: string; elementId: string }
-  | { kind: "milestone.create"; name: string; description?: string; deadline?: string; color?: string; entityDir?: string }
-  | { kind: "milestone.update"; milestoneId: string; name?: string; description?: string; deadline?: string; color?: string }
-  | { kind: "milestone.delete"; milestoneId: string }
-  | { kind: "html-snippet.create"; name: string; snippet: string; slug?: string; entityDir?: string }
-  | { kind: "html-snippet.update"; slug: string; name?: string; snippet?: string }
-  | { kind: "html-snippet.delete"; slug: string }
-  | { kind: "scenario.set-expectation"; chapterId: string; scenarioId: string; expectation: ScenarioExpectationData }
-  | { kind: "scenario.remove-expectation"; chapterId: string; scenarioId: string; expectationId: string }
-  | { kind: "scenario.create"; chapterId: string; name: string; clock?: string; initialState?: Record<string, unknown>; seededEvents?: ScenarioSeededEvent[]; entityDir?: string }
-  | { kind: "scenario.delete"; chapterId: string; scenarioId: string }
-  | { kind: "scenario.update"; chapterId: string; scenarioId: string; name?: string; clock?: string | null; initialState?: Record<string, unknown>; seededEvents?: ScenarioSeededEvent[] }
-  | { kind: "scenario.record-interaction"; chapterId: string; scenarioId: string; stepIndex: number; storage: Record<string, unknown> }
-  | { kind: "scenario.clear-interactions"; chapterId: string; scenarioId: string };
+  | { kind: "chapter.create"; name: string; context?: string; mode?: string; entityDir: string }
+  | { kind: "chapter.rename"; chapterId: string; newName: string; entityDir: string }
+  | { kind: "chapter.update-context"; chapterId: string; newContext: string; entityDir: string }
+  | { kind: "chapter.delete"; chapterId: string; entityDir: string }
+  | { kind: "lane.create"; chapterId: string; label: string; type: string; index: number; height?: number; entityDir: string }
+  | { kind: "lane.rename"; chapterId: string; laneId: string; newLabel: string; entityDir: string }
+  | { kind: "lane.update-details"; chapterId: string; laneId: string; newDetails: string; entityDir: string }
+  | { kind: "lane.resize"; chapterId: string; laneId: string; newHeight: number; entityDir: string }
+  | { kind: "lane.delete"; chapterId: string; laneId: string; entityDir: string }
+  | { kind: "slice.create"; chapterId: string; label: string; index?: number; status?: string; details?: string; width?: number; entityDir: string }
+  | { kind: "slice.rename"; chapterId: string; sliceId: string; newLabel: string; entityDir: string }
+  | { kind: "slice.update-details"; chapterId: string; sliceId: string; newDetails: string; entityDir: string }
+  | { kind: "slice.update-status"; chapterId: string; sliceId: string; newStatus: string; entityDir: string }
+  | { kind: "slice.delete"; chapterId: string; sliceId: string; entityDir: string }
+  | { kind: "element.create"; chapterId: string; name: string; type: string; laneId: string; sliceId: string; description?: string; details?: string; index?: number; context?: string; entityDir: string }
+  | { kind: "element.rename"; chapterId: string; elementId: string; newName: string; entityDir: string }
+  | { kind: "element.update-description"; chapterId: string; elementId: string; newDescription: string; entityDir: string }
+  | { kind: "element.update-details"; chapterId: string; elementId: string; newDetails: string; entityDir: string }
+  | { kind: "element.update-config"; chapterId: string; elementId: string; playFunction?: string; playType?: string; entityDir: string }
+  | { kind: "element.move"; chapterId: string; elementId: string; newLaneId: string; newSliceId: string; newIndex: number; entityDir: string }
+  | { kind: "element.delete"; chapterId: string; elementId: string; entityDir: string }
+  | { kind: "milestone.create"; name: string; description?: string; deadline?: string; color?: string; entityDir: string }
+  | { kind: "milestone.update"; milestoneId: string; name?: string; description?: string; deadline?: string; color?: string; entityDir: string }
+  | { kind: "milestone.delete"; milestoneId: string; entityDir: string }
+  | { kind: "html-snippet.create"; name: string; snippet: string; slug?: string; entityDir: string }
+  | { kind: "html-snippet.update"; slug: string; name?: string; snippet?: string; entityDir: string }
+  | { kind: "html-snippet.delete"; slug: string; entityDir: string }
+  | { kind: "scenario.set-expectation"; chapterId: string; scenarioId: string; expectation: ScenarioExpectationData; entityDir: string }
+  | { kind: "scenario.remove-expectation"; chapterId: string; scenarioId: string; expectationId: string; entityDir: string }
+  | { kind: "scenario.create"; chapterId: string; name: string; clock?: string; initialState?: Record<string, unknown>; seededEvents?: ScenarioSeededEvent[]; entityDir: string }
+  | { kind: "scenario.delete"; chapterId: string; scenarioId: string; entityDir: string }
+  | { kind: "scenario.update"; chapterId: string; scenarioId: string; name?: string; clock?: string | null; initialState?: Record<string, unknown>; seededEvents?: ScenarioSeededEvent[]; entityDir: string }
+  | { kind: "scenario.record-interaction"; chapterId: string; scenarioId: string; stepIndex: number; storage: Record<string, unknown>; entityDir: string }
+  | { kind: "scenario.clear-interactions"; chapterId: string; scenarioId: string; entityDir: string };
 
 // ─── Priority buckets ─────────────────────────────────────────────────────────
 
@@ -309,29 +309,29 @@ function handleDelete(
 
   switch (kind) {
     case "chapter":
-      ops.push({ kind: "chapter.delete", chapterId: id });
+      ops.push({ kind: "chapter.delete", chapterId: id, entityDir });
       break;
     case "slice": {
       const chapterId = resolveChapterId(root, entityDir);
-      if (chapterId) ops.push({ kind: "slice.delete", chapterId, sliceId: id });
+      if (chapterId) ops.push({ kind: "slice.delete", chapterId, sliceId: id, entityDir });
       break;
     }
     case "lane": {
       const chapterId = resolveChapterId(root, entityDir);
-      if (chapterId) ops.push({ kind: "lane.delete", chapterId, laneId: id });
+      if (chapterId) ops.push({ kind: "lane.delete", chapterId, laneId: id, entityDir });
       break;
     }
     case "element": {
       const chapterId = resolveChapterId(root, entityDir);
-      if (chapterId) ops.push({ kind: "element.delete", chapterId, elementId: id });
+      if (chapterId) ops.push({ kind: "element.delete", chapterId, elementId: id, entityDir });
       break;
     }
     case "milestone":
-      ops.push({ kind: "milestone.delete", milestoneId: id });
+      ops.push({ kind: "milestone.delete", milestoneId: id, entityDir });
       break;
     case "html-snippet": {
       const slug = extractSlugFromEntityDir(entityDir);
-      if (slug) ops.push({ kind: "html-snippet.delete", slug });
+      if (slug) ops.push({ kind: "html-snippet.delete", slug, entityDir });
       break;
     }
     case "scenario": {
@@ -340,7 +340,7 @@ function handleDelete(
       // time, but can also derive it from the entityDir path:
       // chapters/[Context]/[Chapter]/scenarios/[Scenario]
       const chapterId = resolveChapterId(root, entityDir);
-      if (chapterId) ops.push({ kind: "scenario.delete", chapterId, scenarioId: id });
+      if (chapterId) ops.push({ kind: "scenario.delete", chapterId, scenarioId: id, entityDir });
       break;
     }
   }
@@ -369,12 +369,12 @@ function handleRename(
       const oldCtx = extractContextFromChapterDir(oldEntityDir);
       const newCtx = extractContextFromChapterDir(entityDir);
       if (oldCtx !== newCtx && newCtx) {
-        ops.push({ kind: "chapter.update-context", chapterId: id, newContext: data.context ?? newCtx });
+        ops.push({ kind: "chapter.update-context", chapterId: id, newContext: data.context ?? newCtx, entityDir });
       }
       const oldNameSeg = oldEntityDir.split("/").pop();
       const newNameSeg = entityDir.split("/").pop();
       if (oldNameSeg !== newNameSeg && data.name) {
-        ops.push({ kind: "chapter.rename", chapterId: id, newName: data.name });
+        ops.push({ kind: "chapter.rename", chapterId: id, newName: data.name, entityDir });
       }
       break;
     }
@@ -382,7 +382,7 @@ function handleRename(
       const data = readJsonFile(root, `${entityDir}/slice.json`) as SliceJson | null;
       const chapterId = resolveChapterId(root, entityDir);
       if (data?.label && chapterId) {
-        ops.push({ kind: "slice.rename", chapterId, sliceId: id, newLabel: data.label });
+        ops.push({ kind: "slice.rename", chapterId, sliceId: id, newLabel: data.label, entityDir });
       }
       break;
     }
@@ -390,7 +390,7 @@ function handleRename(
       const data = readJsonFile(root, `${entityDir}/lane.json`) as LaneJson | null;
       const chapterId = resolveChapterId(root, entityDir);
       if (data?.label && chapterId) {
-        ops.push({ kind: "lane.rename", chapterId, laneId: id, newLabel: data.label });
+        ops.push({ kind: "lane.rename", chapterId, laneId: id, newLabel: data.label, entityDir });
       }
       break;
     }
@@ -412,17 +412,18 @@ function handleRename(
             newLaneId: data.laneId,
             newSliceId: data.sliceId,
             newIndex: data.index ?? 0,
+            entityDir,
           });
         }
       } else if (data.name) {
-        ops.push({ kind: "element.rename", chapterId, elementId: id, newName: data.name });
+        ops.push({ kind: "element.rename", chapterId, elementId: id, newName: data.name, entityDir });
       }
       break;
     }
     case "milestone": {
       const data = readJsonFile(root, `${entityDir}/milestone.json`) as MilestoneJson | null;
       if (data) {
-        ops.push({ kind: "milestone.update", milestoneId: id, name: data.name, description: data.description, deadline: data.deadline, color: data.color });
+        ops.push({ kind: "milestone.update", milestoneId: id, name: data.name, description: data.description, deadline: data.deadline, color: data.color, entityDir });
       }
       break;
     }
@@ -457,9 +458,9 @@ async function handleUpdate(
       const entityId = data?.id ?? id;
       if (!entityId) return;
       if (data?.name !== undefined && changed("name", data.name))
-        ops.push({ kind: "chapter.rename", chapterId: entityId, newName: data.name });
+        ops.push({ kind: "chapter.rename", chapterId: entityId, newName: data.name, entityDir });
       if (data?.context !== undefined && changed("context", data.context))
-        ops.push({ kind: "chapter.update-context", chapterId: entityId, newContext: data.context });
+        ops.push({ kind: "chapter.update-context", chapterId: entityId, newContext: data.context, entityDir });
       break;
     }
     case "slice": {
@@ -468,16 +469,16 @@ async function handleUpdate(
       const chapterId = resolveChapterId(root, entityDir);
       if (!entityId || !chapterId) return;
       if (data?.label !== undefined && changed("label", data.label))
-        ops.push({ kind: "slice.rename", chapterId, sliceId: entityId, newLabel: data.label });
+        ops.push({ kind: "slice.rename", chapterId, sliceId: entityId, newLabel: data.label, entityDir });
       if (data?.status !== undefined && changed("status", data.status))
-        ops.push({ kind: "slice.update-status", chapterId, sliceId: entityId, newStatus: data.status });
+        ops.push({ kind: "slice.update-status", chapterId, sliceId: entityId, newStatus: data.status, entityDir });
       // Slice details — only emit if details.md actually changed.
       const detailsContent = readMarkdownIfExists(root, `${entityDir}/details.md`);
       const oldSliceCH = diff.oldContentHashes ?? {};
       if (detailsContent !== null) {
         const oldH = oldSliceCH["details.md"];
         if (!oldH || hashContent(detailsContent) !== oldH)
-          ops.push({ kind: "slice.update-details", chapterId, sliceId: entityId, newDetails: detailsContent });
+          ops.push({ kind: "slice.update-details", chapterId, sliceId: entityId, newDetails: detailsContent, entityDir });
       }
       break;
     }
@@ -487,9 +488,9 @@ async function handleUpdate(
       const chapterId = resolveChapterId(root, entityDir);
       if (!entityId || !chapterId) return;
       if (data?.label !== undefined && changed("label", data.label))
-        ops.push({ kind: "lane.rename", chapterId, laneId: entityId, newLabel: data.label });
+        ops.push({ kind: "lane.rename", chapterId, laneId: entityId, newLabel: data.label, entityDir });
       if (data?.height !== undefined && changed("height", data.height))
-        ops.push({ kind: "lane.resize", chapterId, laneId: entityId, newHeight: data.height });
+        ops.push({ kind: "lane.resize", chapterId, laneId: entityId, newHeight: data.height, entityDir });
       break;
     }
     case "element": {
@@ -498,9 +499,9 @@ async function handleUpdate(
       const chapterId = resolveChapterId(root, entityDir);
       if (!entityId || !chapterId) return;
       if (data?.name !== undefined && changed("name", data.name))
-        ops.push({ kind: "element.rename", chapterId, elementId: entityId, newName: data.name });
+        ops.push({ kind: "element.rename", chapterId, elementId: entityId, newName: data.name, entityDir });
       if (data?.laneId && data?.sliceId && (changed("laneId", data.laneId) || changed("sliceId", data.sliceId) || changed("index", data.index ?? 0)))
-        ops.push({ kind: "element.move", chapterId, elementId: entityId, newLaneId: data.laneId, newSliceId: data.sliceId, newIndex: data.index ?? 0 });
+        ops.push({ kind: "element.move", chapterId, elementId: entityId, newLaneId: data.laneId, newSliceId: data.sliceId, newIndex: data.index ?? 0, entityDir });
 
       // Content files — only emit if the specific file changed.
       const oldCH = diff.oldContentHashes ?? {};
@@ -513,15 +514,15 @@ async function handleUpdate(
 
       const desc = readMarkdownIfExists(root, `${entityDir}/description.md`);
       if (contentChanged("description.md", desc))
-        ops.push({ kind: "element.update-description", chapterId, elementId: entityId, newDescription: desc! });
+        ops.push({ kind: "element.update-description", chapterId, elementId: entityId, newDescription: desc!, entityDir });
       const details = readMarkdownIfExists(root, `${entityDir}/details.md`);
       if (contentChanged("details.md", details))
-        ops.push({ kind: "element.update-details", chapterId, elementId: entityId, newDetails: details! });
+        ops.push({ kind: "element.update-details", chapterId, elementId: entityId, newDetails: details!, entityDir });
       const pf = readFileIfExists(root, `${entityDir}/play-function.ts`);
       const ptRaw = readFileIfExists(root, `${entityDir}/play-type.ts`);
       const pt = ptRaw ? stripPlayTypeWrapper(ptRaw) : null;
       if (contentChanged("play-function.ts", pf) || contentChanged("play-type.ts", ptRaw))
-        ops.push({ kind: "element.update-config", chapterId, elementId: entityId, playFunction: pf ?? undefined, playType: pt ?? undefined });
+        ops.push({ kind: "element.update-config", chapterId, elementId: entityId, playFunction: pf ?? undefined, playType: pt ?? undefined, entityDir });
       break;
     }
     case "milestone": {
@@ -535,7 +536,7 @@ async function handleUpdate(
       const colorChanged    = data?.color    !== undefined && changed("color",    data.color);
       const descChanged     = desc !== null; // description is a file — covered by hash
       if (nameChanged || deadlineChanged || colorChanged || descChanged)
-        ops.push({ kind: "milestone.update", milestoneId: entityId, name: data?.name, description: desc ?? data?.description, deadline: data?.deadline, color: data?.color });
+        ops.push({ kind: "milestone.update", milestoneId: entityId, name: data?.name, description: desc ?? data?.description, deadline: data?.deadline, color: data?.color, entityDir });
       break;
     }
     case "html-snippet": {
@@ -550,6 +551,7 @@ async function handleUpdate(
           slug,
           ...(nameChanged && { name: jsonData!.name }),
           ...(htmlContent !== null && { snippet: htmlContent }),
+          entityDir,
         });
       break;
     }
@@ -570,12 +572,13 @@ async function handleUpdate(
         seededEvents: Array.isArray(newData.seededEvents)
           ? (newData.seededEvents as ScenarioSeededEvent[])
           : [],
+        entityDir,
       });
 
       // ── Interactions ──────────────────────────────────────────────────────
       // Replace all: clear then re-record each one in order.
       const interactions = Array.isArray(newData.interactions) ? newData.interactions : [];
-      ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId });
+      ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId, entityDir });
       for (let i = 0; i < interactions.length; i++) {
         ops.push({
           kind: "scenario.record-interaction",
@@ -583,6 +586,7 @@ async function handleUpdate(
           scenarioId,
           stepIndex: i,
           storage: interactions[i]!.storage,
+          entityDir,
         });
       }
 
@@ -599,12 +603,12 @@ async function handleUpdate(
       for (const exp of newExpectations) {
         const old = oldById.get(exp.id);
         if (!old || JSON.stringify(old) !== JSON.stringify(exp)) {
-          ops.push({ kind: "scenario.set-expectation", chapterId, scenarioId, expectation: exp });
+          ops.push({ kind: "scenario.set-expectation", chapterId, scenarioId, expectation: exp, entityDir });
         }
       }
       for (const old of oldExpectations) {
         if (!newById.has(old.id)) {
-          ops.push({ kind: "scenario.remove-expectation", chapterId, scenarioId, expectationId: old.id });
+          ops.push({ kind: "scenario.remove-expectation", chapterId, scenarioId, expectationId: old.id, entityDir });
         }
       }
       break;
