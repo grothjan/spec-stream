@@ -65,25 +65,27 @@ reference for agents that read or write the model.
 
 ---
 
-## Editable files (synced back to prooph board on `git commit`)
+## Editable files (synced back to prooph board on `@proophboard/spec-stream sync-back`)
 
-These files can be created or modified by an agent. On the next `git commit` the
-pre-commit hook calls `@proophboard/spec-stream sync-back` which pushes the changes to the board.
+These files can be created or modified by an agent. On the next `@proophboard/spec-stream sync-back` run 
+changes are pushed to prooph board workspace.
 
-| File | What it maps to |
-|------|-----------------|
-| `element.json` | element name, type, position (laneId/sliceId/index) |
-| `description.md` | element description (the short sticky-note text) |
-| `details.md` (in element dir) | element details (rich markdown content) |
-| `play-function.ts` | Exploration Mode decide/apply handler |
-| `play-type.ts` | Exploration Mode Payload type (without the `type Payload =` prefix — that is added automatically) |
-| `scenario.json` | scenario definition, interactions, expectations |
-| `slice.json` | slice label, status |
-| `slice details.md` | slice details |
-| `lane.json` | lane label, height |
-| `chapter.json` | chapter name, context |
-| `milestone.json` | milestone name, deadline, color |
-| `milestone description.md` | milestone description |
+| File | What it maps to                                                                                  |
+|------|--------------------------------------------------------------------------------------------------|
+| `element.json` | element name, type, position (laneId/sliceId/index)                                              |
+| `description.md` | element description (the short sticky-note text)                                                 |
+| `details.md` (in element dir) | element details (rich markdown content)                                                          |
+| `play-function.ts` | Exploration Mode decide/apply/read handler                                                       |
+| `play-type.ts` | Exploration Mode Payload type |
+| `scenario.json` | scenario definition, interactions, expectations                                                  |
+| `slice.json` | slice label, status                                                                              |
+| `slice details.md` | slice details                                                                                    |
+| `lane.json` | lane label, height                                                                               |
+| `chapter.json` | chapter name, context                                                                            |
+| `milestone.json` | milestone name, deadline, color                                                                  |
+| `milestone description.md` | milestone description                                                                            |
+| `html snippet slug.json` | snippet name and slug |
+| `html snippet slug.html` | html snippet that gets imported into main html |
 
 ---
 
@@ -301,8 +303,8 @@ To find slice IDs for expectations, read `slice.json` in the relevant slice dire
 
 ## How sync-back works
 
-On `git commit`, the pre-commit hook runs `@proophboard/spec-stream sync-back`. It diffs staged
-changes against HEAD and translates them into prooph board API calls:
+Run `@proophboard/spec-stream sync-back`. It diffs 
+changes against manifest and translates them into prooph board API calls:
 
 - Modified `element.json` → rename and/or move element
 - Modified `description.md` / `details.md` → update description/details
@@ -311,12 +313,11 @@ changes against HEAD and translates them into prooph board API calls:
 - Added files → create the entity
 - Deleted primary `.json` → delete the entity
 
-If any API call fails, the hook exits non-zero and the commit is aborted. Fix the issue
+If any API call fails, the command exits non-zero. Fix the issue
 and try again.
 
 **Preview without committing:**
 ```sh
-git add .spec-stream/model/
 @proophboard/spec-stream sync-back --dry-run --verbose
 ```
 
