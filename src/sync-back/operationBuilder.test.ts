@@ -390,6 +390,135 @@ describe("buildOperations", () => {
     expect(ops).toHaveLength(0);
   });
 
+  // ─── Scenario update: interactions unchanged → no interaction ops ─────────
+  it("update diff on scenario emits no interaction ops when interactions unchanged", async () => {
+    setupChapter(root);
+    const SCENARIO_ID = "scenario-uuid-1";
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    const interactions = [{ uiElementId: "ui-1", storage: { x: 1 } }];
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      id: SCENARIO_ID,
+      chapterId: CHAPTER_ID,
+      name: "My Scenario",
+      interactions,
+    });
+    const diffs: EntityDiff[] = [
+      updateDiff(SCENARIO_DIR, "scenario", SCENARIO_ID, {
+        oldInteractions: interactions, // same as on disk
+      }),
+    ];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeUndefined();
+    expect(ops.find((o) => o.kind === "scenario.record-interaction")).toBeUndefined();
+  });
+
+  // ─── Scenario update: step changed → upsert only that step ───────────────
+  it("update diff on scenario upserts only the changed step (no clear)", async () => {
+    setupChapter(root);
+    const SCENARIO_ID = "scenario-uuid-1";
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      id: SCENARIO_ID,
+      chapterId: CHAPTER_ID,
+      name: "My Scenario",
+      interactions: [
+        { uiElementId: "ui-1", storage: { x: 1 } },        // changed
+        { uiElementId: "ui-2", storage: { y: 2 } },        // unchanged
+      ],
+    });
+    const diffs: EntityDiff[] = [
+      updateDiff(SCENARIO_DIR, "scenario", SCENARIO_ID, {
+        oldInteractions: [
+          { uiElementId: "ui-1", storage: { x: 99 } },     // was different
+          { uiElementId: "ui-2", storage: { y: 2 } },      // unchanged
+        ],
+      }),
+    ];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeUndefined();
+    const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
+    expect(recordOps).toHaveLength(1);
+    expect(recordOps[0]).toMatchObject({ stepIndex: 0, storage: { x: 1 } });
+  });
+
+  // ─── Scenario update: step added → upsert only the new step ──────────────
+  it("update diff on scenario upserts only the new step when a step is added", async () => {
+    setupChapter(root);
+    const SCENARIO_ID = "scenario-uuid-1";
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      id: SCENARIO_ID,
+      chapterId: CHAPTER_ID,
+      name: "My Scenario",
+      interactions: [
+        { uiElementId: "ui-1", storage: { x: 1 } },   // unchanged
+        { uiElementId: "ui-2", storage: { y: 2 } },   // new
+      ],
+    });
+    const diffs: EntityDiff[] = [
+      updateDiff(SCENARIO_DIR, "scenario", SCENARIO_ID, {
+        oldInteractions: [{ uiElementId: "ui-1", storage: { x: 1 } }],
+      }),
+    ];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeUndefined();
+    const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
+    expect(recordOps).toHaveLength(1);
+    expect(recordOps[0]).toMatchObject({ stepIndex: 1, storage: { y: 2 } });
+  });
+
+  // ─── Scenario update: step removed → clear + re-record all ───────────────
+  it("update diff on scenario does clear + re-record when a step is removed", async () => {
+    setupChapter(root);
+    const SCENARIO_ID = "scenario-uuid-1";
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      id: SCENARIO_ID,
+      chapterId: CHAPTER_ID,
+      name: "My Scenario",
+      interactions: [{ uiElementId: "ui-1", storage: { x: 1 } }], // one step remains
+    });
+    const diffs: EntityDiff[] = [
+      updateDiff(SCENARIO_DIR, "scenario", SCENARIO_ID, {
+        oldInteractions: [
+          { uiElementId: "ui-1", storage: { x: 1 } },
+          { uiElementId: "ui-2", storage: { y: 2 } }, // was here, now removed
+        ],
+      }),
+    ];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeDefined();
+    const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
+    expect(recordOps).toHaveLength(1);
+    expect(recordOps[0]).toMatchObject({ stepIndex: 0, storage: { x: 1 } });
+  });
+
+  // ─── Scenario update: all steps removed → clear only ─────────────────────
+  it("update diff on scenario emits only clear when all interactions removed", async () => {
+    setupChapter(root);
+    const SCENARIO_ID = "scenario-uuid-1";
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      id: SCENARIO_ID,
+      chapterId: CHAPTER_ID,
+      name: "My Scenario",
+      // no interactions
+    });
+    const diffs: EntityDiff[] = [
+      updateDiff(SCENARIO_DIR, "scenario", SCENARIO_ID, {
+        oldInteractions: [{ uiElementId: "ui-1", storage: { x: 1 } }],
+      }),
+    ];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeDefined();
+    expect(ops.filter((o) => o.kind === "scenario.record-interaction")).toHaveLength(0);
+  });
+
   // ─── Scenario create (minimal — name only) ────────────────────────────────
   it("create diff on scenario emits only scenario.create when no interactions or expectations", async () => {
     setupChapter(root);
@@ -411,7 +540,7 @@ describe("buildOperations", () => {
   });
 
   // ─── Scenario create with interactions ───────────────────────────────────
-  it("create diff on scenario emits clear-interactions + record-interaction ops", async () => {
+  it("create diff on scenario emits record-interaction ops (no clear — upsert semantics)", async () => {
     setupChapter(root);
     const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
     writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
@@ -429,14 +558,8 @@ describe("buildOperations", () => {
     // scenario.create comes first (priority 3)
     expect(ops[0]).toMatchObject({ kind: "scenario.create", chapterId: CHAPTER_ID, name: "My Scenario" });
 
-    // clear-interactions comes next
-    const clearOp = ops.find((o) => o.kind === "scenario.clear-interactions");
-    expect(clearOp).toMatchObject({
-      kind: "scenario.clear-interactions",
-      chapterId: CHAPTER_ID,
-      scenarioId: PENDING_SCENARIO_ID,
-      entityDir: SCENARIO_DIR,
-    });
+    // No clear-interactions — record-interaction is an upsert, no clear needed for a new scenario
+    expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeUndefined();
 
     // two record-interaction ops with sentinel ID
     const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
@@ -502,18 +625,17 @@ describe("buildOperations", () => {
     // scenario.create is first
     expect(ops[0]!.kind).toBe("scenario.create");
 
-    // All follow-up ops use the sentinel ID
+    // All follow-up ops use the sentinel ID — no clear-interactions (upsert semantics)
     const followUps = ops.slice(1);
     expect(followUps.every((o) => "scenarioId" in o && (o as { scenarioId: string }).scenarioId === PENDING_SCENARIO_ID)).toBe(true);
     expect(followUps.map((o) => o.kind)).toEqual([
-      "scenario.clear-interactions",
       "scenario.record-interaction",
       "scenario.set-expectation",
     ]);
   });
 
-  // ─── Scenario create ordering: follows element.create ────────────────────
-  it("scenario.create is ordered at the same priority as element.create (before content updates)", async () => {
+  // ─── Scenario create ordering: scenario.create before record-interaction ─
+  it("scenario.create is ordered before its follow-up record-interaction ops", async () => {
     setupChapter(root);
     const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
     writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
@@ -525,7 +647,9 @@ describe("buildOperations", () => {
     const ops = await buildOperations({ syncRootAbs: root, diffs });
 
     const createIdx = ops.findIndex((o) => o.kind === "scenario.create");
-    const clearIdx  = ops.findIndex((o) => o.kind === "scenario.clear-interactions");
-    expect(createIdx).toBeLessThan(clearIdx);
+    const recordIdx = ops.findIndex((o) => o.kind === "scenario.record-interaction");
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    expect(recordIdx).toBeGreaterThanOrEqual(0);
+    expect(createIdx).toBeLessThan(recordIdx);
   });
 });

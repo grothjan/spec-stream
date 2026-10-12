@@ -31,6 +31,7 @@ import {
   readEntityContentHashes,
   type ManifestEntry,
   type ScenarioExpectationSnapshot,
+  type ScenarioInteractionSnapshot,
 } from "./manifest.js";
 
 export interface SyncBackOptions {
@@ -185,13 +186,15 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
         ...(Object.keys(contentHashes).length > 0 && { contentHashes }),
       };
 
-      // For scenarios, persist the current expectations array so the next sync-back
-      // run can diff against it and emit scenario.remove-expectation operations when
-      // expectations are deleted locally (BUG-005).
+      // For scenarios, persist the current expectations and interactions arrays so the
+      // next sync-back run can diff against them.
       if (diff.kind === "scenario") {
-        const scenarioExpectations = readScenarioExpectations(syncDirAbs, diff.entityDir);
-        if (scenarioExpectations !== null) {
-          entry.extra = { expectations: scenarioExpectations };
+        const scenarioJson = readScenarioJson(syncDirAbs, diff.entityDir);
+        if (scenarioJson !== null) {
+          const extra: ManifestEntry["extra"] = {};
+          if (scenarioJson.expectations !== null) extra.expectations = scenarioJson.expectations;
+          if (scenarioJson.interactions !== null) extra.interactions = scenarioJson.interactions;
+          if (Object.keys(extra).length > 0) entry.extra = extra;
         }
       }
 
@@ -207,6 +210,14 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
     // merged manifest while only the new dir exists on disk — causing a spurious
     // delete.  computeManifestDiff already guards against this, but we also GC here
     // so the stale entry doesn't accumulate forever.
+    //
+    // We also handle the case where an entity was deleted externally (on the board or
+    // via the local model being updated by sync): sync removes the entry from
+    // sync-manifest.json and deletes the local file.  sync-back-ids.json still holds
+    // the old entry, causing a spurious delete operation on every subsequent run (the
+    // API returns 404/500 since the entity is already gone).  If an id is absent from
+    // sync-manifest AND its directory no longer exists on disk, the entity is gone —
+    // clean up the stale sync-back-ids entry so we stop retrying.
     const syncManifest = loadManifest(syncManifestPath(syncDirAbs));
     // Build a map from id → canonical dir according to sync-manifest.
     const manifestIdToDir = new Map<string, string>();
@@ -221,6 +232,18 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
         // this sync-back-ids entry is stale; remove it.
         delete existing.entities[dir];
         gcCount++;
+        continue;
+      }
+      if (canonicalDir === undefined) {
+        // This id is not in sync-manifest at all. Check whether the entity directory
+        // still exists on disk. If it doesn't, the entity was deleted externally
+        // (board-side deletion processed by sync) — the sync-back-ids entry is stale.
+        const dirOnDisk = existsSync(join(syncDirAbs, dir));
+        if (!dirOnDisk) {
+          delete existing.entities[dir];
+          gcCount++;
+          debug(`GC: removed stale sync-back-ids entry for externally deleted entity @ ${dir}`);
+        }
       }
     }
     if (gcCount > 0) {
@@ -265,21 +288,29 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Read the expectations array from a scenario.json on disk.
- * Returns the array (possibly empty) if the file exists, or null if the file
- * is missing or unreadable.
+ * Read expectations and interactions from a scenario.json on disk.
+ * Returns an object with both arrays (possibly empty) if the file exists,
+ * or null if the file is missing or unreadable.
  */
-function readScenarioExpectations(
+function readScenarioJson(
   syncRootAbs: string,
   entityDir: string,
-): ScenarioExpectationSnapshot[] | null {
+): { expectations: ScenarioExpectationSnapshot[]; interactions: ScenarioInteractionSnapshot[] } | null {
   try {
     const absPath = join(syncRootAbs, entityDir, "scenario.json");
     if (!existsSync(absPath)) return null;
-    const parsed = JSON.parse(readFileSync(absPath, "utf8")) as { expectations?: unknown[] };
-    return Array.isArray(parsed.expectations)
-      ? (parsed.expectations as ScenarioExpectationSnapshot[])
-      : [];
+    const parsed = JSON.parse(readFileSync(absPath, "utf8")) as {
+      expectations?: unknown[];
+      interactions?: unknown[];
+    };
+    return {
+      expectations: Array.isArray(parsed.expectations)
+        ? (parsed.expectations as ScenarioExpectationSnapshot[])
+        : [],
+      interactions: Array.isArray(parsed.interactions)
+        ? (parsed.interactions as ScenarioInteractionSnapshot[])
+        : [],
+    };
   } catch {
     return null;
   }

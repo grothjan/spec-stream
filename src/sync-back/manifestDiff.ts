@@ -21,6 +21,7 @@ import {
   hashContent,
   type ManifestEntry,
   type ScenarioExpectationSnapshot,
+  type ScenarioInteractionSnapshot,
 } from "./manifest.js";
 import { parseSyncPath, primaryJsonPath } from "./pathParser.js";
 import type { EntityKind } from "./pathParser.js";
@@ -51,6 +52,11 @@ export interface EntityDiff {
    * Used by operationBuilder to diff and emit set/remove-expectation ops.
    */
   oldExpectations?: ScenarioExpectationSnapshot[];
+  /**
+   * For scenario entities: the previous interactions array from the manifest.
+   * Used by operationBuilder to diff and only emit record-interaction for changed steps.
+   */
+  oldInteractions?: ScenarioInteractionSnapshot[];
   /**
    * Snapshot of key mutable fields from the manifest at the time of last sync.
    * Used by operationBuilder to compare against current json and only emit ops
@@ -134,6 +140,7 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
             id: diskId,
             oldEntityDir: oldDir,
             oldExpectations: known[oldDir]?.extra?.expectations,
+            oldInteractions: known[oldDir]?.extra?.interactions,
             oldFields: known[oldDir]?.fields,
             oldContentHashes: known[oldDir]?.contentHashes,
           });
@@ -162,6 +169,7 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
         kind,
         id: manifestEntry.id,
         oldExpectations: manifestEntry.extra?.expectations,
+        oldInteractions: manifestEntry.extra?.interactions,
         oldFields: manifestEntry.fields,
         oldContentHashes: manifestEntry.contentHashes,
       });
@@ -180,18 +188,31 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
   // Any manifest dir that wasn't found on disk (and not already handled as a rename
   // source) is a delete.
   //
-  // Exception: if the same entity id is already tracked under a *different* dir that was
-  // handled (found on disk), this entry is a stale record — not a real delete. This
+  // Exception 1: if the same entity id is already tracked under a *different* dir that
+  // was handled (found on disk), this entry is a stale record — not a real delete. This
   // happens when sync-back writes an entry for a directory (e.g. `0000_Lead-Created`)
   // and then the sync process renames the directory to match a board-side rename
   // (`0000_Lead-Registered`), updating sync-manifest.json but leaving the old
   // sync-back-ids.json entry in place. On the next sync-back run, both dirs appear in
   // the merged manifest, but only the new one exists on disk.  Without this guard the
   // old entry would produce a spurious `element.delete`.
+  //
+  // Exception 2: if the entry exists only in sync-back-ids (absent from sync-manifest)
+  // AND the entity directory is missing from disk, the entity was deleted externally —
+  // either on the board (sync processed the deletion event and removed the local file
+  // and its sync-manifest entry) or by a manual local delete that sync has already
+  // reconciled.  Emitting a delete op in this case would send a redundant API call for
+  // an entity that no longer exists, producing 404/500 errors on every run.
+  const syncManifestEntityIds = new Set(
+    Object.values(syncManifest.entities).map((e) => e.id),
+  );
   for (const [entityDir, entry] of Object.entries(known)) {
     if (handledManifestDirs.has(entityDir)) continue;
     // Skip stale entries: same id already handled under the new directory name.
     if (entry.id && handledIds.has(entry.id)) continue;
+    // Skip externally-deleted entities: only in sync-back-ids, absent from
+    // sync-manifest, and directory no longer on disk.
+    if (entry.id && !syncManifestEntityIds.has(entry.id)) continue;
     // Determine kind from the entityDir path.
     const kind = kindFromEntityDir(entityDir);
     if (!kind) continue;
@@ -201,6 +222,7 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
       kind,
       id: entry.id,
       oldExpectations: entry.extra?.expectations,
+      oldInteractions: entry.extra?.interactions,
     });
   }
 

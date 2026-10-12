@@ -586,18 +586,51 @@ async function handleUpdate(
       });
 
       // ── Interactions ──────────────────────────────────────────────────────
-      // Replace all: clear then re-record each one in order.
+      // Diff against the old interactions from the manifest.
+      // - Steps added or changed → record-interaction (upsert per step, no clear needed)
+      // - Steps removed (count reduced or step_index gone) → clear + re-record all
+      // - No change → emit nothing
       const interactions = Array.isArray(newData.interactions) ? newData.interactions : [];
-      ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId, entityDir });
-      for (let i = 0; i < interactions.length; i++) {
-        ops.push({
-          kind: "scenario.record-interaction",
-          chapterId,
-          scenarioId,
-          stepIndex: i,
-          storage: interactions[i]!.storage,
-          entityDir,
-        });
+      const oldInteractions = Array.isArray(diff.oldInteractions) ? diff.oldInteractions : [];
+
+      // Detect whether any steps were removed (old had more steps, or a step at a given
+      // index no longer exists). If so, we need clear + full re-record since the API has
+      // no per-step delete.
+      const stepRemoved = oldInteractions.length > interactions.length;
+
+      if (stepRemoved) {
+        // A step was removed — must clear and re-record all.
+        ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId, entityDir });
+        for (let i = 0; i < interactions.length; i++) {
+          ops.push({
+            kind: "scenario.record-interaction",
+            chapterId,
+            scenarioId,
+            stepIndex: i,
+            storage: interactions[i]!.storage,
+            entityDir,
+          });
+        }
+      } else {
+        // No steps removed — upsert only changed/new steps.
+        for (let i = 0; i < interactions.length; i++) {
+          const oldStep = oldInteractions[i];
+          const newStep = interactions[i]!;
+          const unchanged =
+            oldStep !== undefined &&
+            oldStep.uiElementId === newStep.uiElementId &&
+            JSON.stringify(oldStep.storage) === JSON.stringify(newStep.storage);
+          if (!unchanged) {
+            ops.push({
+              kind: "scenario.record-interaction",
+              chapterId,
+              scenarioId,
+              stepIndex: i,
+              storage: newStep.storage,
+              entityDir,
+            });
+          }
+        }
       }
 
       // ── Expectations ──────────────────────────────────────────────────────
@@ -716,20 +749,17 @@ function handleCreate(
 
       // Emit interaction ops using the PENDING_SCENARIO_ID sentinel. The executor
       // will substitute the real ID returned by scenario.create before executing them.
+      // record-interaction is an upsert per step — no clear needed for a new scenario.
       const interactions = Array.isArray(data.interactions) ? data.interactions : [];
-      if (interactions.length > 0) {
-        // Always start clean for a new scenario (no prior interactions on the board).
-        ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId: PENDING_SCENARIO_ID, entityDir });
-        for (let i = 0; i < interactions.length; i++) {
-          ops.push({
-            kind: "scenario.record-interaction",
-            chapterId,
-            scenarioId: PENDING_SCENARIO_ID,
-            stepIndex: i,
-            storage: interactions[i]!.storage,
-            entityDir,
-          });
-        }
+      for (let i = 0; i < interactions.length; i++) {
+        ops.push({
+          kind: "scenario.record-interaction",
+          chapterId,
+          scenarioId: PENDING_SCENARIO_ID,
+          stepIndex: i,
+          storage: interactions[i]!.storage,
+          entityDir,
+        });
       }
 
       // Emit expectation ops — all are new since the scenario didn't exist before.

@@ -243,4 +243,41 @@ describe("computeManifestDiff", () => {
     expect(elementDiff?.status).not.toBe("delete");
     expect(elementDiff?.id).toBe(ELEMENT_ID);
   });
+
+  it("does NOT emit a delete for an entity that was deleted externally (sync removed it from sync-manifest and disk)", async () => {
+    // Scenario: an entity (e.g. scenario, element) was deleted on the board.
+    // sync processed the deletion event → removed the local file AND removed the
+    // entry from sync-manifest.json. But sync-back-ids.json still holds the old
+    // entry (written by a previous sync-back create). On the next sync-back run
+    // the entry appears in the merged manifest but not on disk and not in
+    // sync-manifest — this must NOT produce a delete operation.
+
+    const SCENARIO_ID  = "scenario-uuid-deleted";
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/Deleted-Scenario`;
+
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, { id: CHAPTER_ID, name: "My Chapter", context: "App" });
+
+    // sync-manifest.json: the scenario is GONE (sync already processed the deletion).
+    writeManifest(root, {
+      [CHAPTER_DIR]: { id: CHAPTER_ID },
+    });
+
+    // sync-back-ids.json: still has the scenario from a previous create run.
+    const backIds: SyncManifest = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [SCENARIO_DIR]: { id: SCENARIO_ID, hash: "oldhash" },
+      },
+    };
+    saveManifest(syncBackIdsPath(root), backIds);
+
+    // Disk: no scenario.json — sync already deleted it.
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+
+    const deletes = diffs.filter((d) => d.status === "delete");
+    expect(deletes.some((d) => d.entityDir === SCENARIO_DIR)).toBe(false);
+    expect(deletes.some((d) => d.id === SCENARIO_ID)).toBe(false);
+  });
 });

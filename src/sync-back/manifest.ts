@@ -60,6 +60,8 @@ export interface ManifestEntry {
   extra?: {
     /** Last-known scenario expectations (for diffing on next sync-back run). */
     expectations?: ScenarioExpectationSnapshot[];
+    /** Last-known scenario interactions (for diffing on next sync-back run). */
+    interactions?: ScenarioInteractionSnapshot[];
   };
 }
 
@@ -70,6 +72,11 @@ export interface ScenarioExpectationSnapshot {
   elementId?: string;
   match?: string;
   expected: Record<string, unknown>;
+}
+
+export interface ScenarioInteractionSnapshot {
+  uiElementId: string;
+  storage: Record<string, unknown>;
 }
 
 /** The on-disk format for both manifest files. */
@@ -315,11 +322,16 @@ export function buildManifestFromTree(
     }
     if (Object.keys(contentHashes).length > 0) entry.contentHashes = contentHashes;
 
-    // Store scenario expectations for next sync-back diff.
-    if (relPath.endsWith("/scenario.json") && Array.isArray(parsed.expectations)) {
-      entry.extra = {
-        expectations: parsed.expectations as ScenarioExpectationSnapshot[],
-      };
+    // Store scenario expectations and interactions for next sync-back diff.
+    if (relPath.endsWith("/scenario.json")) {
+      const extra: ManifestEntry["extra"] = {};
+      if (Array.isArray(parsed.expectations)) {
+        extra.expectations = parsed.expectations as ScenarioExpectationSnapshot[];
+      }
+      if (Array.isArray(parsed.interactions)) {
+        extra.interactions = parsed.interactions as ScenarioInteractionSnapshot[];
+      }
+      if (Object.keys(extra).length > 0) entry.extra = extra;
     }
 
     entities[entityDir] = entry;
