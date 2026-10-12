@@ -26,6 +26,7 @@ import {
   loadManifest,
   saveManifest,
   syncBackIdsPath,
+  syncManifestPath,
   readEntityFields,
   readEntityContentHashes,
   type ManifestEntry,
@@ -196,6 +197,35 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
 
       existing.entities[diff.entityDir] = entry;
       wrote++;
+    }
+
+    // ── GC: remove stale sync-back-ids entries superseded by sync-manifest ──────
+    // When the sync process renames an entity directory on disk (because the board
+    // sent back an element-renamed / chapter-renamed / etc. event after sync-back
+    // pushed the rename), it updates sync-manifest.json to the new dir but leaves
+    // the old entry in sync-back-ids.json.  On the next run, both dirs appear in the
+    // merged manifest while only the new dir exists on disk — causing a spurious
+    // delete.  computeManifestDiff already guards against this, but we also GC here
+    // so the stale entry doesn't accumulate forever.
+    const syncManifest = loadManifest(syncManifestPath(syncDirAbs));
+    // Build a map from id → canonical dir according to sync-manifest.
+    const manifestIdToDir = new Map<string, string>();
+    for (const [dir, entry] of Object.entries(syncManifest.entities)) {
+      manifestIdToDir.set(entry.id, dir);
+    }
+    let gcCount = 0;
+    for (const [dir, entry] of Object.entries(existing.entities)) {
+      const canonicalDir = manifestIdToDir.get(entry.id);
+      if (canonicalDir !== undefined && canonicalDir !== dir) {
+        // sync-manifest tracks this id under a different (newer) directory —
+        // this sync-back-ids entry is stale; remove it.
+        delete existing.entities[dir];
+        gcCount++;
+      }
+    }
+    if (gcCount > 0) {
+      wrote += gcCount; // ensure we save
+      debug(`GC: removed ${gcCount} stale sync-back-ids entr${gcCount === 1 ? "y" : "ies"} superseded by sync-manifest`);
     }
 
     if (wrote > 0) {

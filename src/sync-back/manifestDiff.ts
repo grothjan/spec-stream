@@ -168,10 +168,30 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
     }
   }
 
+  // Build a set of ids that were successfully handled (found on disk, matched to a
+  // manifest entry). Used below to skip stale sync-back-ids entries whose entity was
+  // renamed by the sync process (old dir in sync-back-ids, new dir in sync-manifest).
+  const handledIds = new Set<string>();
+  for (const dir of handledManifestDirs) {
+    const entry = known[dir];
+    if (entry?.id) handledIds.add(entry.id);
+  }
+
   // Any manifest dir that wasn't found on disk (and not already handled as a rename
   // source) is a delete.
+  //
+  // Exception: if the same entity id is already tracked under a *different* dir that was
+  // handled (found on disk), this entry is a stale record — not a real delete. This
+  // happens when sync-back writes an entry for a directory (e.g. `0000_Lead-Created`)
+  // and then the sync process renames the directory to match a board-side rename
+  // (`0000_Lead-Registered`), updating sync-manifest.json but leaving the old
+  // sync-back-ids.json entry in place. On the next sync-back run, both dirs appear in
+  // the merged manifest, but only the new one exists on disk.  Without this guard the
+  // old entry would produce a spurious `element.delete`.
   for (const [entityDir, entry] of Object.entries(known)) {
     if (handledManifestDirs.has(entityDir)) continue;
+    // Skip stale entries: same id already handled under the new directory name.
+    if (entry.id && handledIds.has(entry.id)) continue;
     // Determine kind from the entityDir path.
     const kind = kindFromEntityDir(entityDir);
     if (!kind) continue;

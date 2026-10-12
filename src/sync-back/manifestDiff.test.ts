@@ -193,4 +193,54 @@ describe("computeManifestDiff", () => {
     const elementDiff = diffs.find((d) => d.entityDir === ELEMENT_DIR);
     expect(elementDiff?.status).toBe("update");
   });
+
+  it("does NOT emit a spurious delete when sync renames a directory that sync-back had recorded under the old name", () => {
+    // Reproduces the bug described in the issue:
+    //
+    // 1. Agent edits element.json: changes `name` field (directory is still OLD_DIR).
+    // 2. sync-back run #1: detects UPDATE, calls element.rename API, writes to
+    //    sync-back-ids.json under OLD_DIR.
+    // 3. Local sync processes the element-renamed event from the board, renames the
+    //    directory to NEW_DIR, and updates sync-manifest.json to use NEW_DIR as key.
+    // 4. sync-back run #2 should NOT emit a delete for OLD_DIR.
+
+    const OLD_ELEMENT_DIR = `${LANE_DIR}/elements/0001_Lead-Created`;
+    const NEW_ELEMENT_DIR = `${LANE_DIR}/elements/0001_Lead-Registered`;
+
+    // State after step 3: disk has NEW_DIR, sync-manifest has NEW_DIR.
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`,     { id: CHAPTER_ID, name: "My Chapter", context: "App" });
+    writeJson(root, `${SLICE_DIR}/slice.json`,          { id: SLICE_ID,   label: "My Slice" });
+    writeJson(root, `${LANE_DIR}/lane.json`,            { id: LANE_ID,    label: "My Lane", type: "information-flow" });
+    writeJson(root, `${NEW_ELEMENT_DIR}/element.json`,  { id: ELEMENT_ID, name: "Lead Registered", type: "event", laneId: LANE_ID, sliceId: SLICE_ID });
+
+    // sync-manifest.json (written by sync): tracks the NEW directory.
+    writeManifest(root, {
+      [CHAPTER_DIR]:     { id: CHAPTER_ID },
+      [SLICE_DIR]:       { id: SLICE_ID },
+      [LANE_DIR]:        { id: LANE_ID },
+      [NEW_ELEMENT_DIR]: { id: ELEMENT_ID },
+    });
+
+    // sync-back-ids.json (written by sync-back run #1): still has the OLD directory.
+    const backIds: SyncManifest = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [OLD_ELEMENT_DIR]: { id: ELEMENT_ID, hash: "oldhash" },
+      },
+    };
+    saveManifest(syncBackIdsPath(root), backIds);
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+
+    // The OLD_DIR must NOT appear as a delete.
+    const deletes = diffs.filter((d) => d.status === "delete");
+    expect(deletes.some((d) => d.entityDir === OLD_ELEMENT_DIR)).toBe(false);
+
+    // The element should appear as an update (or be skipped if hash matches) under NEW_DIR.
+    const elementDiff = diffs.find((d) => d.entityDir === NEW_ELEMENT_DIR);
+    expect(elementDiff).toBeDefined();
+    expect(elementDiff?.status).not.toBe("delete");
+    expect(elementDiff?.id).toBe(ELEMENT_ID);
+  });
 });
