@@ -35,8 +35,6 @@ reference for agents that read or write the model.
         scenarios/
           [Scenario]/
             scenario.json
-  element-details/
-    [Context]/[type]/[Name]/details.md   # canonical shared details
   milestones/
     [Milestone]/
       milestone.json
@@ -61,7 +59,6 @@ reference for agents that read or write the model.
 - `index.md` — chapter slice summary
 - `uuid-index.json` — UUID→path lookup
 - `workspace.json`
-- `element-details/` — canonical shared details mirrored here; edit via the placement `details.md` instead
 
 ---
 
@@ -146,7 +143,6 @@ changes are pushed to prooph board workspace.
   "laneId": "uuid",
   "sliceId": "uuid",
   "index": 0,
-  "detailsRef": "element-details/Todo-Management/command/Create-Todo/details.md",
   "playFunctionRef": "…/play-function.ts",
   "playTypeRef": "…/play-type.ts"
 }
@@ -154,7 +150,6 @@ changes are pushed to prooph board workspace.
 `type` values: `command` | `event` | `information` | `ui` | `automation` | `hotspot`
 
 `playFunctionRef` / `playTypeRef` are only present when the corresponding file exists.
-`detailsRef` always points to the canonical shared details file.
 
 ### `scenario.json`
 ```json

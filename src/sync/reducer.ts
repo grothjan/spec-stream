@@ -30,7 +30,6 @@ import {
   type HtmlSnippetState,
   type Comment,
   type SharedDetailsEntry,
-  elementDetailsKey,
   laneDetailsKey,
 } from "./model.js";
 
@@ -128,9 +127,6 @@ function setSharedBody(
   for (const id of entry.members) applyToMember(id);
 }
 
-function elementKeyOf(el: ElementState): string {
-  return elementDetailsKey(el.context, el.type, el.name);
-}
 function laneKeyOf(lane: LaneState): string {
   return laneDetailsKey(lane.type, lane.label);
 }
@@ -239,7 +235,6 @@ function putElementFromRaw(
     playType: str(raw.playType) ?? existing?.playType,
   };
   state.elements.set(id, el);
-  joinShared(state.sharedElementDetails, elementKeyOf(el), id, details);
 }
 
 function commentFromRaw(raw: Record<string, unknown>): Comment | undefined {
@@ -255,7 +250,6 @@ function commentFromRaw(raw: Record<string, unknown>): Comment | undefined {
 }
 
 function removeElement(state: ModelState, el: ElementState): void {
-  leaveShared(state.sharedElementDetails, elementKeyOf(el), el.id);
   state.elements.delete(el.id);
 }
 
@@ -497,14 +491,7 @@ const HANDLERS: Record<string, Handler> = {
     const el = e.elementId && s.elements.get(e.elementId);
     const name = str(newValue(e).name);
     if (!el || name === undefined) return;
-    // Re-key shared details: leave the old group, join the new one.
-    const details = el.details;
-    leaveShared(s.sharedElementDetails, elementKeyOf(el), el.id);
     el.name = name;
-    joinShared(s.sharedElementDetails, elementKeyOf(el), el.id, details);
-    // Adopt the (possibly different) group body.
-    const entry = s.sharedElementDetails.get(elementKeyOf(el));
-    if (entry) el.details = entry.body;
   },
   "element-description-changed": (s, e) => {
     const el = e.elementId && s.elements.get(e.elementId);
@@ -514,22 +501,12 @@ const HANDLERS: Record<string, Handler> = {
   "element-details-changed": (s, e) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const details = str(newValue(e).details);
-    if (el && details !== undefined) {
-      setSharedBody(s.sharedElementDetails, elementKeyOf(el), details, (id) => {
-        const member = s.elements.get(id);
-        if (member) member.details = details;
-      });
-    }
+    if (el && details !== undefined) el.details = details;
   },
   "element-details-synchronized": (s, e) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const details = str(newValue(e).details);
-    if (el && details !== undefined) {
-      setSharedBody(s.sharedElementDetails, elementKeyOf(el), details, (id) => {
-        const member = s.elements.get(id);
-        if (member) member.details = details;
-      });
-    }
+    if (el && details !== undefined) el.details = details;
   },
   "element-config-changed": (s, e) => {
     const el = e.elementId && s.elements.get(e.elementId);

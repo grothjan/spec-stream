@@ -21,11 +21,9 @@ server, while they continue to **write** changes through the prooph board API/MC
   entity `.json` and in the flat `uuid-index.json` lookup file at the model root. Paths
   use slug-only names — no UUID prefix — for shorter, more readable paths that cost fewer
   tokens when agents scan the tree.
-- **Shared details modeled once, copied for readability.** `details` are shared across
-  elements with the same `name`+`type`+`context` (and lanes by `type`+`name`). The
-  canonical copy lives in `element-details/` / `lane-details/`; each placement gets a
-  copy of `details.md` for zero-indirection reads. `element.json.detailsRef` points at
-  the canonical path.
+- **Shared details modeled once for lanes.** Lane `details` are shared across all lanes
+  with the same `type`+`name`. The canonical copy lives in `lane-details/`; each placement
+  also has a `details.md` for zero-indirection reads.
 
 ## Non-goals
 
@@ -76,10 +74,7 @@ server, while they continue to **write** changes through the prooph board API/MC
                         play-type.ts      # (optional) Exploration Mode play type
                         comments/
                           [createdAt]_[commentId]/{comment.json, comment.md}
-    element-details/                   # canonical shared details
-      [Context]/[ElementType]/[Element name]/details.md
     lane-details/                      # canonical shared lane details
-      [LaneType]/[Lane name]/details.md
     milestones/
       [Milestone name]/
         milestone.json                 # id, name, deadline, color, is_completed,
@@ -237,13 +232,13 @@ is relative to `.spec-stream/model/`. All name/label segments go through the san
 
 | Event | State mutation | FS effect |
 |-------|----------------|-----------|
-| `element-added` / `element-added-with-name` | insert `newValue.element` at its `laneId`×`sliceId`×`index` | mkdir `…/lanes/[type]/[lane]/elements/[index]_[name]/`; write `element.json`, `description.md`, `details.md`; set/create shared `element-details/` canonical |
+| `element-added` / `element-added-with-name` | insert `newValue.element` at its `laneId`×`sliceId`×`index` | mkdir `…/lanes/[type]/[lane]/elements/[index]_[name]/`; write `element.json`, `description.md`, `details.md` |
 | `element-copied` | insert `newValue.element` | as `element-added` |
 | `element-moved` | update `laneId`,`sliceId`,`index` | **move** element dir to new slice/lane subtree; fix `[index]_` prefixes in old and new cells |
-| `element-renamed` | set `name` | **rename element dir**; update `element.json`; **re-key shared details** (`element-details` path changes with name) — see note |
+| `element-renamed` | set `name` | **rename element dir**; update `element.json` |
 | `element-description-changed` | set `description` | write `description.md` |
-| `element-details-changed` | set `details` | write canonical `element-details/[ctx]/[type]/[name]/details.md` + this placement copy |
-| `element-details-synchronized` | fan-out to all elements sharing `ctx+type+name` | rewrite canonical + all placement copies |
+| `element-details-changed` | set `details` | write `details.md` in this placement |
+| `element-details-synchronized` | set `details` (board-side sync to matching elements) | write `details.md` in this placement |
 | `element-config-changed` | merge `Partial<Element>` (icon, noArrow*, playFunction, playType, …) | update `element.json`; write/remove `play-function.ts` and `play-type.ts` |
 | `element-config-synced` | merge synced keys (e.g. `playFunction`, `playType`) | update `element.json`; write/remove `play-function.ts` and `play-type.ts` |
 | `element-comment-added` | append comment | mkdir comment dir; write `comment.json`+`comment.md` |
@@ -251,13 +246,7 @@ is relative to `.spec-stream/model/`. All name/label segments go through the san
 | `element-comment-removed` | drop comment | **rmdir** comment dir |
 | `element-mentioned` | (no structural change) | **default: ignore** |
 | `elements-reordered` | reassign `index` within `laneId`×`sliceId` per `newValue.elementIds` | **rename** `[index]_` prefixes of affected element dirs |
-| `element-removed` | drop element | **rmdir** element dir; if last placement of a shared-details group, optionally GC canonical |
-
-> **Rename re-keys shared details.** Because `element-details/` is keyed by
-> `context/type/name`, an `element-renamed` moves the canonical details to the new name
-> key. If other elements still share the **old** name, the group splits; if the new name
-> matches an existing group, they merge. The reducer resolves this against the in-memory
-> shared-details table rather than guessing from the filesystem.
+| `element-removed` | drop element | **rmdir** element dir |
 
 ### Milestone
 

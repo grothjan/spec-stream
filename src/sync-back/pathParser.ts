@@ -15,7 +15,6 @@
  *         lane.json
  *         elements/[index]_[Element]/
  *           element.json, description.md, details.md, play-function.ts, play-type.ts
- *   element-details/[Context]/[ElementType]/[Element]/details.md
  *   milestones/[Milestone]/
  *     milestone.json, description.md
  *
@@ -23,7 +22,7 @@
  * The parser just identifies the entity type and the directory containing the .json.
  */
 
-export type EntityKind = "chapter" | "slice" | "lane" | "element" | "milestone" | "element-details" | "html-snippet" | "scenario";
+export type EntityKind = "chapter" | "slice" | "lane" | "element" | "milestone" | "html-snippet" | "scenario";
 
 export type FileRole =
   | "chapter.json"
@@ -36,7 +35,6 @@ export type FileRole =
   | "element.details"
   | "element.play-function"
   | "element.play-type"
-  | "element-details.details"
   | "milestone.json"
   | "milestone.description"
   | "html-snippet.html"
@@ -65,14 +63,6 @@ export interface ParsedPath {
 export function parseSyncPath(relPath: string): ParsedPath | null {
   // Normalize to forward-slash.
   const p = relPath.replace(/\\/g, "/");
-
-  // ─── element-details canonical details ──────────────────────────────────────
-  // element-details/[Context]/[ElementType]/[Element name]/details.md
-  const edMatch = p.match(/^element-details\/[^/]+\/[^/]+\/[^/]+\/(details\.md)$/);
-  if (edMatch) {
-    const dir = p.slice(0, p.lastIndexOf("/"));
-    return { kind: "element-details", entityDir: dir, role: "element-details.details", generated: false };
-  }
 
   // ─── html-snippets ───────────────────────────────────────────────────────────
   // html-snippets/[slug].html  or  html-snippets/[slug].json
@@ -198,7 +188,6 @@ export function primaryJsonPath(parsed: ParsedPath): string {
     case "lane":          return `${parsed.entityDir}/lane.json`;
     case "element":       return `${parsed.entityDir}/element.json`;
     case "milestone":     return `${parsed.entityDir}/milestone.json`;
-    case "element-details": return `${parsed.entityDir}/details.md`;
     case "html-snippet":  return `${parsed.entityDir}.json`;
     case "scenario":      return `${parsed.entityDir}/scenario.json`;
   }

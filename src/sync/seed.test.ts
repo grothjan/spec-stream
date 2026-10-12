@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { seedModelFromData, seedModel } from "./seed.js";
 import { applyEvent } from "./reducer.js";
-import { emptyModel, elementDetailsKey } from "./model.js";
+import { emptyModel } from "./model.js";
 import { render } from "./render.js";
 import type { ApiChapter, ApiMilestone, ApiScenario } from "./restClient.js";
 import type { ChangelogEvent } from "../realtime/events.js";
@@ -71,10 +71,10 @@ describe("seedModelFromData", () => {
     expect(s.chapters.get("c1")?.laneOrder).toEqual(["l1", "l2"]);
   });
 
-  it("seeds element description, shared details, and comments", () => {
+  it("seeds element description, details, and comments", () => {
     const s = seedModelFromData("ws", "Demo", [chapter()], []);
     expect(s.elements.get("el1")?.description).toBe("Buy now");
-    expect(s.sharedElementDetails.get(elementDetailsKey("Ordering", "command", "Place Order"))?.body).toBe("## Behaviour");
+    expect(s.elements.get("el1")?.details).toBe("## Behaviour");
     expect(s.elements.get("el1")?.comments[0].text).toBe("review this");
   });
 

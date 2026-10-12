@@ -17,7 +17,6 @@
  *         elements/[index]_[elementId]_[Element]/
  *           element.json, description.md, details.md,
  *           comments/[createdAt]_[id]/{comment.json, comment.md}
- *   element-details/[Context]/[ElementType]/[Element]/details.md
  *   lane-details/[LaneType]/[Lane]/details.md
  *   milestones/[milestoneId]_[Milestone]/{milestone.json, description.md}
  *
@@ -34,7 +33,6 @@ import {
   type ScenarioState,
   type HtmlSnippetState,
   type Comment,
-  parseElementDetailsKey,
   parseLaneDetailsKey,
   slicesOfChapter,
   lanesOfChapter,
@@ -63,7 +61,6 @@ export function render(state: ModelState): DesiredTree {
   for (const chapter of state.chapters.values()) {
     renderChapter(tree, state, chapter);
   }
-  renderSharedElementDetails(tree, state);
   renderSharedLaneDetails(tree, state);
   for (const milestone of state.milestones.values()) {
     renderMilestone(tree, milestone);
@@ -229,7 +226,6 @@ function renderElement(
   el: ElementState,
 ): void {
   const dir = elementDir(chapter, slice, lane, el);
-  const detailsRef = elementDetailsRef(el);
   tree.set(
     `${dir}/element.json`,
     json({
@@ -243,7 +239,6 @@ function renderElement(
       icon: el.icon,
       noArrowSource: el.noArrowSource,
       noArrowTarget: el.noArrowTarget,
-      detailsRef,
       playFunctionRef: el.playFunction !== undefined ? `${dir}/play-function.ts` : undefined,
       playTypeRef: el.playType !== undefined ? `${dir}/play-type.ts` : undefined,
     }),
@@ -257,13 +252,6 @@ function renderElement(
     tree.set(`${dir}/play-type.ts`, `type Payload = ${el.playType}`);
   }
   renderComments(tree, `${dir}/comments`, el.comments);
-}
-
-function elementDetailsRef(el: ElementState): string {
-  const ctx = sanitizeSegment(el.context, "no-context");
-  const type = sanitizeSegment(el.type, "element");
-  const name = sanitizeSegment(el.name, el.id);
-  return `element-details/${ctx}/${type}/${name}/details.md`;
 }
 
 // ─────────────────────── comments ───────────────────────
@@ -306,17 +294,6 @@ function renderScenario(
 }
 
 // ─────────────────────── shared details ───────────────────────
-
-function renderSharedElementDetails(tree: DesiredTree, state: ModelState): void {
-  for (const entry of state.sharedElementDetails.values()) {
-    if (entry.members.size === 0) continue;
-    const { context, type, name } = parseElementDetailsKey(entry.key);
-    const ctx = sanitizeSegment(context, "no-context");
-    const t = sanitizeSegment(type, "element");
-    const n = sanitizeSegment(name, "unnamed");
-    tree.set(`element-details/${ctx}/${t}/${n}/details.md`, markdown(entry.body));
-  }
-}
 
 function renderSharedLaneDetails(tree: DesiredTree, state: ModelState): void {
   for (const entry of state.sharedLaneDetails.values()) {

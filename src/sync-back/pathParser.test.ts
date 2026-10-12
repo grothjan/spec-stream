@@ -145,19 +145,6 @@ describe("parseSyncPath", () => {
     });
   });
 
-  // ─── element-details ─────────────────────────────────────────────────────────
-  describe("element-details files", () => {
-    it("parses element-details details.md", () => {
-      const result = parseSyncPath("element-details/App/command/Register-User/details.md");
-      expect(result).toEqual({
-        kind: "element-details",
-        entityDir: "element-details/App/command/Register-User",
-        role: "element-details.details",
-        generated: false,
-      });
-    });
-  });
-
   // ─── ignored paths ────────────────────────────────────────────────────────────
   describe("ignored paths", () => {
     it("returns null for workspace.json", () => {
@@ -174,6 +161,10 @@ describe("parseSyncPath", () => {
 
     it("returns null for lane-details", () => {
       expect(parseSyncPath("lane-details/information-flow/My-Lane/details.md")).toBeNull();
+    });
+
+    it("returns null for element-details (no longer synced)", () => {
+      expect(parseSyncPath("element-details/App/command/Register-User/details.md")).toBeNull();
     });
 
     it("handles backslash paths (Windows)", () => {

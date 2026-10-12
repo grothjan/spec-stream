@@ -1,9 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   emptyModel,
-  elementDetailsKey,
   laneDetailsKey,
-  parseElementDetailsKey,
   parseLaneDetailsKey,
   slicesOfChapter,
   lanesOfChapter,
@@ -58,24 +56,9 @@ function seed(): ModelState {
 }
 
 describe("detail keys", () => {
-  it("builds and parses element-details keys", () => {
-    const k = elementDetailsKey("App", "command", "Place Order");
-    expect(parseElementDetailsKey(k)).toEqual({
-      context: "App",
-      type: "command",
-      name: "Place Order",
-    });
-  });
-
   it("builds and parses lane-details keys", () => {
     const k = laneDetailsKey("user-lane", "Customer");
     expect(parseLaneDetailsKey(k)).toEqual({ type: "user-lane", name: "Customer" });
-  });
-
-  it("keys are distinct across fields", () => {
-    expect(elementDetailsKey("A", "command", "X")).not.toBe(
-      elementDetailsKey("A", "event", "X"),
-    );
   });
 });
 

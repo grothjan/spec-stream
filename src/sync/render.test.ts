@@ -76,16 +76,6 @@ describe("render layout", () => {
     expect(lane.id).toBe("l2");
   });
 
-  it("element.json has a detailsRef into the canonical tree", () => {
-    const t = render(model());
-    const el = JSON.parse(
-      t.get(
-        "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order/element.json",
-      )!,
-    );
-    expect(el.detailsRef).toBe("element-details/Ordering/command/Place-Order/details.md");
-  });
-
   it("does not emit play-function.ts or play-type.ts when not set", () => {
     const t = render(model());
     const dir = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order";
@@ -150,12 +140,11 @@ describe("render layout", () => {
 });
 
 describe("shared details", () => {
-  it("writes canonical element-details once per group", () => {
+  it("does not write element-details/ canonical tree", () => {
     const s = model();
     applyEvent(s, ev("element-details-changed", { elementId: "el1", data: { newValue: { details: "## Behaviour" } } }));
     const t = render(s);
-    const path = "element-details/Ordering/command/Place-Order/details.md";
-    expect(t.get(path)).toContain("## Behaviour");
+    expect([...t.keys()].some((k) => k.startsWith("element-details/"))).toBe(false);
   });
 
   it("writes lane-details only when a body exists", () => {

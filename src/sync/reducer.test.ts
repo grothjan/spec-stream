@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { applyEvent } from "./reducer.js";
 import {
   emptyModel,
-  elementDetailsKey,
   type ModelState,
 } from "./model.js";
 import type { ChangelogEvent } from "../realtime/events.js";
@@ -138,49 +137,31 @@ describe("element events", () => {
     expect(s.elements.has("el1")).toBe(false);
   });
 
-  it("shares details across same context+type+name and fans out", () => {
+  it("updates details on the element directly (no fan-out)", () => {
     const s = base();
     withElement(s, "el1", "Place Order");
-    withElement(s, "el2", "Place Order"); // same group
-    applyEvent(s, ev("element-details-changed", { elementId: "el1", data: { newValue: { details: "## shared body" } } }));
-    expect(s.elements.get("el1")?.details).toBe("## shared body");
-    expect(s.elements.get("el2")?.details).toBe("## shared body"); // fan-out
-    const key = elementDetailsKey("App", "command", "Place Order");
-    expect(s.sharedElementDetails.get(key)?.members.size).toBe(2);
+    withElement(s, "el2", "Place Order"); // same name — no fan-out
+    applyEvent(s, ev("element-details-changed", { elementId: "el1", data: { newValue: { details: "## body" } } }));
+    expect(s.elements.get("el1")?.details).toBe("## body");
+    expect(s.elements.get("el2")?.details).toBe(""); // not fanned out
   });
 
-  it("synchronize event fans out identically", () => {
+  it("element-details-synchronized updates details on the element directly", () => {
     const s = base();
     withElement(s, "el1", "Order");
     withElement(s, "el2", "Order");
     applyEvent(s, ev("element-details-synchronized", { elementId: "el2", data: { newValue: { details: "synced" } } }));
-    expect(s.elements.get("el1")?.details).toBe("synced");
     expect(s.elements.get("el2")?.details).toBe("synced");
+    expect(s.elements.get("el1")?.details).toBe(""); // not fanned out
   });
 
-  it("rename splits a shared-details group", () => {
+  it("rename just updates the element name", () => {
     const s = base();
     withElement(s, "el1", "Shared");
     withElement(s, "el2", "Shared");
-    applyEvent(s, ev("element-details-changed", { elementId: "el1", data: { newValue: { details: "body" } } }));
-    const oldKey = elementDetailsKey("App", "command", "Shared");
-    expect(s.sharedElementDetails.get(oldKey)?.members.size).toBe(2);
-
     applyEvent(s, ev("element-renamed", { elementId: "el2", data: { newValue: { name: "Different" } } }));
-    expect(s.sharedElementDetails.get(oldKey)?.members.size).toBe(1); // el1 remains
-    const newKey = elementDetailsKey("App", "command", "Different");
-    expect(s.sharedElementDetails.get(newKey)?.members.has("el2")).toBe(true);
-  });
-
-  it("rename merges into an existing group and adopts its body", () => {
-    const s = base();
-    withElement(s, "el1", "Target");
-    applyEvent(s, ev("element-details-changed", { elementId: "el1", data: { newValue: { details: "target body" } } }));
-    withElement(s, "el2", "Other");
-    applyEvent(s, ev("element-renamed", { elementId: "el2", data: { newValue: { name: "Target" } } }));
-    expect(s.elements.get("el2")?.details).toBe("target body"); // adopted
-    const key = elementDetailsKey("App", "command", "Target");
-    expect(s.sharedElementDetails.get(key)?.members.size).toBe(2);
+    expect(s.elements.get("el2")?.name).toBe("Different");
+    expect(s.elements.get("el1")?.name).toBe("Shared");
   });
 
   it("handles element comments", () => {

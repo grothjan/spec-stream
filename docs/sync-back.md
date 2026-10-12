@@ -160,7 +160,6 @@ array against the version stored in `sync-manifest.json`:
 - `index.md` — auto-generated summary, not synced back.
 - `uuid-index.json`, `workspace.json`, `sync-state.json`, `sync-manifest.json`,
   `sync-back-ids.json` — internal bookkeeping.
-- `element-details/` canonical copies — updates go through the element's own `details.md`.
 - `lane-details/` — lane details are updated via `lane.json` modifications.
 - Non-expectation scenario fields — managed via the prooph board UI / MCP.
 

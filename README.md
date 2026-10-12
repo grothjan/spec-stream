@@ -355,7 +355,6 @@ incrementally. Restarts catch up on missed events automatically.
           scenarios/
             [Scenario name]/
               scenario.json  # Exploration Mode scenario
-    element-details/         # canonical shared details (one per name+type+context)
     lane-details/            # canonical shared lane details
     milestones/
       [Milestone]/
@@ -410,7 +409,7 @@ checked path.
 
 ### Agent skill: give agents the schema
 
-[`MODEL_SCHEMA.md`](./MODEL_SCHEMA.md) at the repo root is a compact reference document
+[`MODEL_SCHEMA.md`](./skills/local-model/MODEL_SCHEMA.md) in the `skills/local-model/` directory is a compact reference document
 describing the full file tree layout, every JSON schema, and the `play-function.ts` /
 `play-type.ts` / `scenario.json` conventions. It is designed to be loaded as a skill or
 system-prompt context for AI agents so they can read and write the local model correctly

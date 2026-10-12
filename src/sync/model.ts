@@ -48,7 +48,7 @@ export interface ElementState {
   context: string;
   /** Per-placement description (shown on the sticky). */
   description: string;
-  /** Per-placement copy of the shared details body (canonical lives in sharedElementDetails). */
+  /** Details body for this element placement. */
   details: string;
   laneId: string;
   sliceId: string;
@@ -179,10 +179,10 @@ export interface MilestoneState {
 }
 
 /**
- * Shared-details entry. prooph board shares the `details` field across all elements with
- * the same (context, type, name) — and lanes with the same (type, name). We store the
- * canonical body once, plus the set of member element/lane ids currently in the group,
- * so renames can split/merge groups and removals can GC the canonical file.
+ * Shared-details entry. prooph board shares the `details` field across all lanes with
+ * the same (type, name). We store the canonical body once, plus the set of member lane
+ * ids currently in the group, so renames can split/merge groups and removals can GC
+ * the canonical file.
  */
 export interface SharedDetailsEntry {
   key: string;
@@ -202,8 +202,6 @@ export interface ModelState {
   scenarios: Map<string, ScenarioState>;
   /** Workspace-wide HTML snippets, keyed by slug. */
   htmlSnippets: Map<string, HtmlSnippetState>;
-  /** Shared element details keyed by `context\u0000type\u0000name`. */
-  sharedElementDetails: Map<string, SharedDetailsEntry>;
   /** Shared lane details keyed by `type\u0000name`. */
   sharedLaneDetails: Map<string, SharedDetailsEntry>;
 }
@@ -220,29 +218,15 @@ export function emptyModel(workspaceId = "", workspaceName = ""): ModelState {
     milestones: new Map(),
     scenarios: new Map(),
     htmlSnippets: new Map(),
-    sharedElementDetails: new Map(),
     sharedLaneDetails: new Map(),
   };
 }
 
 const SEP = "\u0000";
 
-/** Key for the shared *element* details table: (context, type, name). */
-export function elementDetailsKey(context: string, type: string, name: string): string {
-  return `${context}${SEP}${type}${SEP}${name}`;
-}
-
 /** Key for the shared *lane* details table: (type, label/name). */
 export function laneDetailsKey(type: string, name: string): string {
   return `${type}${SEP}${name}`;
-}
-
-/** Decompose an element-details key back into its parts. */
-export function parseElementDetailsKey(
-  key: string,
-): { context: string; type: string; name: string } {
-  const [context = "", type = "", name = ""] = key.split(SEP);
-  return { context, type, name };
 }
 
 /** Decompose a lane-details key back into its parts. */
