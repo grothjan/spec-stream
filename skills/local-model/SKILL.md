@@ -15,7 +15,7 @@ For the complete file tree layout, every JSON schema, field types and allowed va
 
 1. **Near real-time refresh.** The live prooph board is the source of truth. The local copy is updated near real-time with the help of `npx @proophboard/spec-stream run` running in the background. The user has to run it, if you detect that your changes are not synced, provide a hint to the user that spec-stream is maybe not running or has technical problem.
 2. **Treat the local model as a working copy, not a second source of truth.** Make changes in the local model and use `npx @proophboard/spec-stream sync-back` to synchronize them back.
-3. **Never edit generated or mirrored files directly.** In particular, do not edit `index.md`, `uuid-index.json`, `workspace.json`, or anything under `element-details/`.
+3. **Never edit generated or mirrored files directly.** In particular, do not edit `index.md`, `uuid-index.json`, or `workspace.json`.
 4. **Validate before sync-back.** Run model validation, inspect the proposed changes, then synchronize.
 5. **Treat deletions as destructive.** Deleting a primary entity JSON file can delete that entity from prooph board. Never delete files as a cleanup shortcut.
 6. **Do not assume a successful local edit means the board is updated.** Changes reach prooph board only after sync-back succeeds.
@@ -59,8 +59,6 @@ Typical structure:
         scenarios/
           [Scenario]/
             scenario.json
-  element-details/
-    [Context]/[type]/[Name]/details.md
   milestones/
     [Milestone]/
       milestone.json
@@ -90,7 +88,6 @@ Some optional files or directories appear only when the corresponding content ex
 | `index.md` | Generated chapter summary; overwritten on sync |
 | `uuid-index.json` | Generated UUID-to-path index |
 | `workspace.json` | Generated workspace metadata |
-| `element-details/` | Mirror of canonical shared element details; edit the element placement's `details.md` instead |
 
 Do not try to make a change persist by editing a generated file. Change the appropriate editable source file and let `spec-stream` regenerate its outputs.
 
@@ -104,7 +101,7 @@ Do not try to make a change persist by editing a generated file. Change the appr
 | `lane.json` | Lane label, index, and height |
 | `element.json` | Element name, type, and placement properties such as `laneId`, `sliceId`, and index |
 | Element `description.md` | Short, placement-specific sticky-note description |
-| Element `details.md` | Shared rich details for the element |
+| Element `details.md` | Rich details for the element. Syncing back propagates the change to all same-name/type/context elements on prooph board. |
 | `play-function.ts` | Exploration Mode handler for a command or event |
 | `play-type.ts` | Command/event payload type |
 | `scenario.json` | Scenario definition, interactions, and expectations |
@@ -116,9 +113,8 @@ Use the existing file format and nearby examples. Do not invent fields or reshap
 ### Important distinction: element description vs. details
 
 - `description.md` is short text for the particular placement of an element.
-- Element `details.md` is shared by synchronized placements of the same element. Editing it can affect other chapters too.
-- Slice-specific behavior and Given/When/Then material belong in the **slice details**, not in shared element details.
-- Do not edit `element-details/` directly.
+- Element `details.md` is the details body for that element placement. When you edit it and sync back, prooph board propagates the change to all other elements sharing the same name, type, and context — you do not need to touch the other placements manually.
+- Slice-specific behavior and Given/When/Then material belong in the **slice details**, not in element details.
 
 ## 3. Make a focused change
 
@@ -191,7 +187,8 @@ After a successful sync-back, check the command result.
 
 ## 6. Avoid common mistakes
 
-- **Editing generated output:** Change source files, not `index.md`, indexes, workspace metadata, or the mirrored `element-details/` tree.
+- **Renaming by moving directories:** To rename an entity, change only the `name`/`label` field in the JSON — never rename the directory yourself. Renaming the directory makes sync-back see a delete + create, which duplicates the entity on the board. The directory is updated automatically by `spec-stream run` after the board confirms the rename.
+- **Editing generated output:** Change source files, not `index.md`, indexes, or workspace metadata.
 - **Editing by slug alone:** Slugs are for paths; use JSON for the actual name and properties.
 - **Ignoring shared details:** Element details may be shared across placements and chapters.
 - **Deleting files casually:** A deleted primary JSON file may delete the corresponding board entity.
