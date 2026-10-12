@@ -199,4 +199,37 @@ describe("RealtimeClient", () => {
     await rc.updateToken("t2");
     expect(state.setAuthCalls).toEqual(["t1", "t2"]);
   });
+
+  it("re-auths the socket on every reconnect (regression: SUBSCRIBED→CLOSED bounce)", async () => {
+    // A hard socket close (1006) resets the Supabase realtime socket's internal auth
+    // state. openChannel() must call setAuth on every reconnect attempt, not just at
+    // initial connect() — otherwise the socket reconnects unauthenticated and the server
+    // immediately drops it, producing the infinite SUBSCRIBED→CLOSED loop seen in prod.
+    const { client, state } = mockSupabase();
+    const rc = new RealtimeClient({
+      supabaseUrl: "u",
+      supabaseAnonKey: "a",
+      workspaceId: "ws-1",
+      accessToken: "tok-initial",
+      createClient: () => client,
+      onEvent: () => {},
+      backoff: new Backoff({ baseMs: 100, jitterMs: 0 }),
+    });
+
+    await rc.connect();
+    // Initial connect calls setAuth once.
+    expect(state.setAuthCalls).toEqual(["tok-initial"]);
+
+    // Simulate a hard drop and reconnect.
+    state.channels[0].emitStatus("CHANNEL_ERROR");
+    vi.advanceTimersByTime(100);
+    // openChannel() on the reconnect must have called setAuth again.
+    expect(state.setAuthCalls).toEqual(["tok-initial", "tok-initial"]);
+
+    // After a token renewal, reconnects use the updated token.
+    await rc.updateToken("tok-renewed");
+    state.channels[1].emitStatus("CHANNEL_ERROR");
+    vi.advanceTimersByTime(200);
+    expect(state.setAuthCalls).toEqual(["tok-initial", "tok-initial", "tok-renewed", "tok-renewed"]);
+  });
 });

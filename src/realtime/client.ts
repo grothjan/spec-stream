@@ -87,7 +87,6 @@ export class RealtimeClient {
   /** Subscribe to the changelog channel. Idempotent-ish: removes any prior channel first. */
   async connect(): Promise<void> {
     this.stopped = false;
-    await this.client.realtime.setAuth(this.accessToken);
     this.openChannel();
   }
 
@@ -96,6 +95,13 @@ export class RealtimeClient {
       this.client.removeChannel(this.channel);
       this.channel = undefined;
     }
+
+    // Re-auth the socket on every channel open, including reconnects. A hard socket
+    // close (e.g. error 1006) resets the Supabase realtime socket's internal auth
+    // state. Without this, reconnect attempts subscribe unauthenticated and the server
+    // immediately drops the connection — producing the SUBSCRIBED → CLOSED bounce loop
+    // seen in production after a network error.
+    void this.client.realtime.setAuth(this.accessToken);
 
     const channel = this.client.channel(`changelog:${this.opts.workspaceId}`);
     channel.on(
