@@ -185,11 +185,10 @@ function renderSlice(
   tree.set(`${dir}/details.md`, markdown(slice.details));
   renderComments(tree, `${dir}/comments`, slice.comments);
 
-  // Lanes are rendered per slice (slice-first); only lanes that have elements in this
-  // slice are materialized, to avoid empty lane dirs under every slice.
+  // Lanes are always rendered per slice (slice-first) so that agents can discover the
+  // lane's id and directory even before any elements have been placed in it.
   for (const lane of lanes) {
     const cell = elementsInCell(state, lane.id, slice.id);
-    if (cell.length === 0) continue;
     renderLane(tree, chapter, slice, lane, cell);
   }
 }
@@ -395,7 +394,6 @@ function renderUuidIndex(tree: DesiredTree, state: ModelState): void {
 
       for (const lane of lanes) {
         const cell = elementsInCell(state, lane.id, slice.id);
-        if (cell.length === 0) continue;
         const lDir = laneDirUnderSlice(chapter, slice, lane);
         // Lane id may appear multiple times (once per slice); last write wins but all
         // point to a valid directory — agents typically only need one path per lane.

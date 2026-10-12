@@ -65,13 +65,15 @@ describe("render layout", () => {
     expect(md).toContain("Click buy");
   });
 
-  it("does not materialize empty lanes under a slice", () => {
+  it("always materializes lane folders under a slice, even when the lane has no elements", () => {
     const s = model();
     // add a second lane with no elements in s1
     applyEvent(s, ev("lane-added", { chapterId: "c1", data: { newValue: { lane: { id: "l2", label: "System", type: "system", index: 1 } } } }));
     const t = render(s);
-    const empty = [...t.keys()].some((k) => k.includes("System"));
-    expect(empty).toBe(false);
+    const laneJson = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/system/System/lane.json";
+    expect(t.has(laneJson)).toBe(true);
+    const lane = JSON.parse(t.get(laneJson)!);
+    expect(lane.id).toBe("l2");
   });
 
   it("element.json has a detailsRef into the canonical tree", () => {
@@ -136,6 +138,14 @@ describe("render layout", () => {
     expect(index["s1"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order");
     expect(index["l1"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer");
     expect(index["el1"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order");
+  });
+
+  it("indexes an empty lane's id in uuid-index.json", () => {
+    const s = model();
+    applyEvent(s, ev("lane-added", { chapterId: "c1", data: { newValue: { lane: { id: "l2", label: "System", type: "system", index: 1 } } } }));
+    const t = render(s);
+    const index = JSON.parse(t.get("uuid-index.json")!);
+    expect(index["l2"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/system/System");
   });
 });
 
