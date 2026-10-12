@@ -201,6 +201,15 @@ export type SyncBackOperation =
   | { kind: "scenario.record-interaction"; chapterId: string; scenarioId: string; stepIndex: number; storage: Record<string, unknown>; entityDir: string }
   | { kind: "scenario.clear-interactions"; chapterId: string; scenarioId: string; entityDir: string };
 
+// ─── Sentinel for newly-created scenario IDs ─────────────────────────────────
+
+/**
+ * Placeholder scenarioId used in interaction/expectation operations that are emitted
+ * alongside a `scenario.create` in the same sync-back run. The executor substitutes
+ * the real ID returned by the POST before executing those follow-up operations.
+ */
+export const PENDING_SCENARIO_ID = "__pending_scenario_id__";
+
 // ─── Priority buckets ─────────────────────────────────────────────────────────
 
 const PRIORITY: Record<OperationKind, number> = {
@@ -208,6 +217,8 @@ const PRIORITY: Record<OperationKind, number> = {
   "lane.create": 1,
   "slice.create": 2,
   "element.create": 3,
+  // scenario.create must run before its follow-up interaction/expectation ops (priority 4)
+  "scenario.create": 3,
   "chapter.rename": 4,
   "chapter.update-context": 4,
   "lane.rename": 4,
@@ -233,7 +244,6 @@ const PRIORITY: Record<OperationKind, number> = {
   "html-snippet.delete": 9,
   "scenario.set-expectation": 4,
   "scenario.remove-expectation": 4,
-  "scenario.create": 4,
   "scenario.delete": 9,
   "scenario.update": 4,
   "scenario.record-interaction": 4,
@@ -693,15 +703,48 @@ function handleCreate(
       const data = readJsonFile(root, `${entityDir}/scenario.json`) as ScenarioJson | null;
       // chapterId is required to create a scenario; it's stored in scenario.json by sync.
       if (!data?.name || !data?.chapterId) break;
+      const { chapterId } = data;
       ops.push({
         kind: "scenario.create",
-        chapterId: data.chapterId,
+        chapterId,
         name: data.name,
         clock: data.clock ?? undefined,
         initialState: data.initialState,
         seededEvents: Array.isArray(data.seededEvents) ? (data.seededEvents as ScenarioSeededEvent[]) : undefined,
         entityDir,
       });
+
+      // Emit interaction ops using the PENDING_SCENARIO_ID sentinel. The executor
+      // will substitute the real ID returned by scenario.create before executing them.
+      const interactions = Array.isArray(data.interactions) ? data.interactions : [];
+      if (interactions.length > 0) {
+        // Always start clean for a new scenario (no prior interactions on the board).
+        ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId: PENDING_SCENARIO_ID, entityDir });
+        for (let i = 0; i < interactions.length; i++) {
+          ops.push({
+            kind: "scenario.record-interaction",
+            chapterId,
+            scenarioId: PENDING_SCENARIO_ID,
+            stepIndex: i,
+            storage: interactions[i]!.storage,
+            entityDir,
+          });
+        }
+      }
+
+      // Emit expectation ops — all are new since the scenario didn't exist before.
+      const expectations: ScenarioExpectationData[] = Array.isArray(data.expectations)
+        ? (data.expectations as ScenarioExpectationData[])
+        : [];
+      for (const exp of expectations) {
+        ops.push({
+          kind: "scenario.set-expectation",
+          chapterId,
+          scenarioId: PENDING_SCENARIO_ID,
+          expectation: exp,
+          entityDir,
+        });
+      }
       break;
     }
   }

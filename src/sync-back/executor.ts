@@ -11,6 +11,7 @@
 
 import type { RestClient } from "../sync/restClient.js";
 import type { SyncBackOperation } from "./operationBuilder.js";
+import { PENDING_SCENARIO_ID } from "./operationBuilder.js";
 
 export interface ExecuteOptions {
   /** When true, log operations but don't call the API. */
@@ -55,7 +56,8 @@ export async function executeOperations(
 ): Promise<ExecuteResult> {
   const result: ExecuteResult = { executed: 0, skipped: 0, failed: 0, errors: [], newIds: new Map(), failedEntityDirs: new Set() };
 
-  for (const op of operations) {
+  for (let i = 0; i < operations.length; i++) {
+    const op = operations[i]!;
     const label = describeOperation(op);
     if (opts.dryRun) {
       opts.log(`[dry-run] ${label}`);
@@ -69,7 +71,21 @@ export async function executeOperations(
       // Capture new id for create operations so syncBack can persist it.
       if (newId !== undefined) {
         const entityDir = entityDirForCreateOp(op);
-        if (entityDir) result.newIds.set(entityDir, newId);
+        if (entityDir) {
+          result.newIds.set(entityDir, newId);
+
+          // For scenario.create: substitute the PENDING_SCENARIO_ID sentinel in all
+          // follow-up operations that share the same entityDir (interactions and
+          // expectations emitted by handleCreate).
+          if (op.kind === "scenario.create") {
+            for (let j = i + 1; j < operations.length; j++) {
+              const pending = operations[j]!;
+              if (pending.entityDir === entityDir && "scenarioId" in pending && pending.scenarioId === PENDING_SCENARIO_ID) {
+                (pending as { scenarioId: string }).scenarioId = newId;
+              }
+            }
+          }
+        }
       }
     } catch (err) {
       const msg = (err as Error).message;

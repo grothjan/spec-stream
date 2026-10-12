@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildOperations } from "./operationBuilder.js";
+import { buildOperations, PENDING_SCENARIO_ID } from "./operationBuilder.js";
 import type { EntityDiff } from "./manifestDiff.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -388,5 +388,144 @@ describe("buildOperations", () => {
   it("returns empty ops for empty diffs", async () => {
     const ops = await buildOperations({ syncRootAbs: root, diffs: [] });
     expect(ops).toHaveLength(0);
+  });
+
+  // ─── Scenario create (minimal — name only) ────────────────────────────────
+  it("create diff on scenario emits only scenario.create when no interactions or expectations", async () => {
+    setupChapter(root);
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      name: "My Scenario",
+      chapterId: CHAPTER_ID,
+      clock: null,
+    });
+    const diffs: EntityDiff[] = [createDiff(SCENARIO_DIR, "scenario")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({
+      kind: "scenario.create",
+      chapterId: CHAPTER_ID,
+      name: "My Scenario",
+      entityDir: SCENARIO_DIR,
+    });
+  });
+
+  // ─── Scenario create with interactions ───────────────────────────────────
+  it("create diff on scenario emits clear-interactions + record-interaction ops", async () => {
+    setupChapter(root);
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      name: "My Scenario",
+      chapterId: CHAPTER_ID,
+      clock: null,
+      interactions: [
+        { uiElementId: "elem-ui-1", storage: { clicked: true } },
+        { uiElementId: "elem-ui-2", storage: { value: "hello" } },
+      ],
+    });
+    const diffs: EntityDiff[] = [createDiff(SCENARIO_DIR, "scenario")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    // scenario.create comes first (priority 3)
+    expect(ops[0]).toMatchObject({ kind: "scenario.create", chapterId: CHAPTER_ID, name: "My Scenario" });
+
+    // clear-interactions comes next
+    const clearOp = ops.find((o) => o.kind === "scenario.clear-interactions");
+    expect(clearOp).toMatchObject({
+      kind: "scenario.clear-interactions",
+      chapterId: CHAPTER_ID,
+      scenarioId: PENDING_SCENARIO_ID,
+      entityDir: SCENARIO_DIR,
+    });
+
+    // two record-interaction ops with sentinel ID
+    const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
+    expect(recordOps).toHaveLength(2);
+    expect(recordOps[0]).toMatchObject({
+      kind: "scenario.record-interaction",
+      chapterId: CHAPTER_ID,
+      scenarioId: PENDING_SCENARIO_ID,
+      stepIndex: 0,
+      storage: { clicked: true },
+    });
+    expect(recordOps[1]).toMatchObject({
+      kind: "scenario.record-interaction",
+      scenarioId: PENDING_SCENARIO_ID,
+      stepIndex: 1,
+      storage: { value: "hello" },
+    });
+  });
+
+  // ─── Scenario create with expectations ───────────────────────────────────
+  it("create diff on scenario emits scenario.set-expectation ops", async () => {
+    setupChapter(root);
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      name: "My Scenario",
+      chapterId: CHAPTER_ID,
+      expectations: [
+        { id: "exp-1", sliceId: SLICE_ID, kind: "state", expected: { count: 1 } },
+        { id: "exp-2", sliceId: SLICE_ID, kind: "event", elementId: "elem-1", expected: { type: "UserCreated" } },
+      ],
+    });
+    const diffs: EntityDiff[] = [createDiff(SCENARIO_DIR, "scenario")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    const setOps = ops.filter((o) => o.kind === "scenario.set-expectation");
+    expect(setOps).toHaveLength(2);
+    expect(setOps[0]).toMatchObject({
+      kind: "scenario.set-expectation",
+      chapterId: CHAPTER_ID,
+      scenarioId: PENDING_SCENARIO_ID,
+      expectation: { id: "exp-1", sliceId: SLICE_ID, kind: "state", expected: { count: 1 } },
+    });
+    expect(setOps[1]).toMatchObject({
+      kind: "scenario.set-expectation",
+      scenarioId: PENDING_SCENARIO_ID,
+      expectation: { id: "exp-2", elementId: "elem-1" },
+    });
+  });
+
+  // ─── Scenario create with both interactions and expectations ─────────────
+  it("create diff with both interactions and expectations emits all follow-up ops with sentinel", async () => {
+    setupChapter(root);
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/Full-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      name: "Full Scenario",
+      chapterId: CHAPTER_ID,
+      interactions: [{ uiElementId: "ui-1", storage: { x: 1 } }],
+      expectations: [{ id: "exp-1", sliceId: SLICE_ID, kind: "state", expected: {} }],
+    });
+    const diffs: EntityDiff[] = [createDiff(SCENARIO_DIR, "scenario")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    // scenario.create is first
+    expect(ops[0]!.kind).toBe("scenario.create");
+
+    // All follow-up ops use the sentinel ID
+    const followUps = ops.slice(1);
+    expect(followUps.every((o) => "scenarioId" in o && (o as { scenarioId: string }).scenarioId === PENDING_SCENARIO_ID)).toBe(true);
+    expect(followUps.map((o) => o.kind)).toEqual([
+      "scenario.clear-interactions",
+      "scenario.record-interaction",
+      "scenario.set-expectation",
+    ]);
+  });
+
+  // ─── Scenario create ordering: follows element.create ────────────────────
+  it("scenario.create is ordered at the same priority as element.create (before content updates)", async () => {
+    setupChapter(root);
+    const SCENARIO_DIR = `${CHAPTER_DIR}/scenarios/My-Scenario`;
+    writeJson(root, `${SCENARIO_DIR}/scenario.json`, {
+      name: "My Scenario",
+      chapterId: CHAPTER_ID,
+      interactions: [{ uiElementId: "ui-1", storage: {} }],
+    });
+    const diffs: EntityDiff[] = [createDiff(SCENARIO_DIR, "scenario")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+
+    const createIdx = ops.findIndex((o) => o.kind === "scenario.create");
+    const clearIdx  = ops.findIndex((o) => o.kind === "scenario.clear-interactions");
+    expect(createIdx).toBeLessThan(clearIdx);
   });
 });

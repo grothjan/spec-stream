@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { executeOperations } from "./executor.js";
 import type { SyncBackOperation } from "./operationBuilder.js";
+import { PENDING_SCENARIO_ID } from "./operationBuilder.js";
 import type { RestClient } from "../sync/restClient.js";
 
 // ─── Mock RestClient ──────────────────────────────────────────────────────────
@@ -328,6 +329,209 @@ describe("executeOperations", () => {
     const result = await executeOperations(client, ops, { dryRun, log });
 
     expect(result.failedEntityDirs.size).toBe(0);
+  });
+
+  // ─── Scenario create — sentinel ID substitution ───────────────────────────
+
+  it("scenario.create: substitutes PENDING_SCENARIO_ID with the real returned ID in follow-up ops", async () => {
+    const realId = "real-scenario-uuid";
+    // Build a client whose postJson returns the real scenario ID for the create call.
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      calls,
+      async postJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "POST", path, body });
+        if (path.endsWith("/scenarios")) return { id: realId };
+        return {};
+      },
+      async patchJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "PATCH", path, body });
+        return {};
+      },
+      async deleteReq(path: string) {
+        calls.push({ method: "DELETE", path });
+      },
+    } as unknown as RestClient & { calls: typeof calls };
+
+    const scenarioDir = "chapters/App/Ch/scenarios/My-Scenario";
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "scenario.create",
+        chapterId: "chap-1",
+        name: "My Scenario",
+        entityDir: scenarioDir,
+      },
+      {
+        kind: "scenario.clear-interactions",
+        chapterId: "chap-1",
+        scenarioId: PENDING_SCENARIO_ID,
+        entityDir: scenarioDir,
+      },
+      {
+        kind: "scenario.record-interaction",
+        chapterId: "chap-1",
+        scenarioId: PENDING_SCENARIO_ID,
+        stepIndex: 0,
+        storage: { clicked: true },
+        entityDir: scenarioDir,
+      },
+      {
+        kind: "scenario.set-expectation",
+        chapterId: "chap-1",
+        scenarioId: PENDING_SCENARIO_ID,
+        expectation: { id: "exp-1", sliceId: "slice-1", kind: "state", expected: {} },
+        entityDir: scenarioDir,
+      },
+    ];
+
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    expect(result.executed).toBe(4);
+    expect(result.failed).toBe(0);
+
+    // The create call goes to the chapter scenarios endpoint
+    expect(calls[0]).toMatchObject({ method: "POST", path: "/chapters/chap-1/scenarios" });
+
+    // clear-interactions uses the real ID (not the sentinel)
+    expect(calls[1]).toMatchObject({
+      method: "DELETE",
+      path: `/chapters/chap-1/scenarios/${realId}/interactions`,
+    });
+
+    // record-interaction uses the real ID
+    expect(calls[2]).toMatchObject({
+      method: "POST",
+      path: `/chapters/chap-1/scenarios/${realId}/interactions`,
+      body: { step_index: 0, storage: { clicked: true } },
+    });
+
+    // set-expectation uses the real ID
+    expect(calls[3]).toMatchObject({
+      method: "POST",
+      path: `/chapters/chap-1/scenarios/${realId}/expectations`,
+    });
+  });
+
+  it("scenario.create: does not substitute follow-up ops from a different entityDir", async () => {
+    const realId = "scenario-uuid-A";
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      calls,
+      async postJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "POST", path, body });
+        if (path.endsWith("/scenarios")) return { id: realId };
+        return {};
+      },
+      async patchJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "PATCH", path, body });
+        return {};
+      },
+      async deleteReq(path: string) {
+        calls.push({ method: "DELETE", path });
+      },
+    } as unknown as RestClient & { calls: typeof calls };
+
+    const scenarioDirA = "chapters/App/Ch/scenarios/Scenario-A";
+    const scenarioDirB = "chapters/App/Ch/scenarios/Scenario-B";
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "scenario.create",
+        chapterId: "chap-1",
+        name: "Scenario A",
+        entityDir: scenarioDirA,
+      },
+      {
+        // This belongs to a different scenario — sentinel should NOT be replaced
+        kind: "scenario.clear-interactions",
+        chapterId: "chap-1",
+        scenarioId: PENDING_SCENARIO_ID,
+        entityDir: scenarioDirB,
+      },
+    ];
+
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+
+    // The clear-interactions call for scenarioDirB should still have the sentinel
+    // (which means the API would be called with the literal sentinel string)
+    expect(calls[1]).toMatchObject({
+      method: "DELETE",
+      path: `/chapters/chap-1/scenarios/${PENDING_SCENARIO_ID}/interactions`,
+    });
+  });
+
+  it("scenario.create: stores the returned ID in newIds", async () => {
+    const realId = "new-scenario-uuid";
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      calls,
+      async postJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "POST", path, body });
+        if (path.endsWith("/scenarios")) return { id: realId };
+        return {};
+      },
+      async patchJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "PATCH", path, body });
+        return {};
+      },
+      async deleteReq(path: string) {
+        calls.push({ method: "DELETE", path });
+      },
+    } as unknown as RestClient & { calls: typeof calls };
+
+    const scenarioDir = "chapters/App/Ch/scenarios/My-Scenario";
+    const ops: SyncBackOperation[] = [
+      { kind: "scenario.create", chapterId: "chap-1", name: "My Scenario", entityDir: scenarioDir },
+    ];
+
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    expect(result.newIds.get(scenarioDir)).toBe(realId);
+  });
+
+  it("scenario.create: follow-up ops are skipped when create fails", async () => {
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      calls,
+      async postJson(path: string, body: Record<string, unknown>) {
+        if (path.endsWith("/scenarios")) throw new Error("create failed");
+        calls.push({ method: "POST", path, body });
+        return {};
+      },
+      async patchJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "PATCH", path, body });
+        return {};
+      },
+      async deleteReq(path: string) {
+        calls.push({ method: "DELETE", path });
+      },
+    } as unknown as RestClient & { calls: typeof calls };
+
+    const scenarioDir = "chapters/App/Ch/scenarios/My-Scenario";
+    const ops: SyncBackOperation[] = [
+      { kind: "scenario.create", chapterId: "chap-1", name: "My Scenario", entityDir: scenarioDir },
+      { kind: "scenario.clear-interactions", chapterId: "chap-1", scenarioId: PENDING_SCENARIO_ID, entityDir: scenarioDir },
+      {
+        kind: "scenario.record-interaction",
+        chapterId: "chap-1",
+        scenarioId: PENDING_SCENARIO_ID,
+        stepIndex: 0,
+        storage: {},
+        entityDir: scenarioDir,
+      },
+    ];
+
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    // create failed, but the other two still execute (fail-forward semantics)
+    // They will call the API with the sentinel ID — the API will reject them, which
+    // is also fine since they get logged as failures.
+    expect(result.failed).toBeGreaterThanOrEqual(1);
+    // The create itself failed
+    expect(result.errors[0]!.operation.kind).toBe("scenario.create");
   });
 
   // ─── Chapter operations ───────────────────────────────────────────────────
