@@ -237,11 +237,24 @@ function runInMemoryTypecheck(
 }
 
 async function loadTs(): Promise<TsModule | null> {
+  // Resolve typescript relative to the user's project (cwd) first.
+  // This is necessary when spec-stream is run via global npx/npm, where its own
+  // module resolution context is isolated from the project's node_modules.
+  // Falling back to a bare import("typescript") handles the case where typescript
+  // is co-located with spec-stream (e.g. local devDependency install).
   try {
-    // Dynamic import — ts is optional at runtime.
-    const ts = await import("typescript");
+    const { createRequire } = await import("module");
+    const requireFromCwd = createRequire(process.cwd() + "/package.json");
+    const tsPath = requireFromCwd.resolve("typescript");
+    const ts = await import(tsPath);
     return ts as unknown as TsModule;
   } catch {
-    return null;
+    // cwd resolution failed — try spec-stream's own module resolution as fallback
+    try {
+      const ts = await import("typescript");
+      return ts as unknown as TsModule;
+    } catch {
+      return null;
+    }
   }
 }
