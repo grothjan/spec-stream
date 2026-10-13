@@ -603,4 +603,107 @@ describe("executeOperations", () => {
       body: { slice_id: "slice-1", new_status: "planned" },
     });
   });
+
+  // ─── localId forwarding ───────────────────────────────────────────────────
+
+  it("chapter.create passes localId as id in the request body", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "chapter.create",
+        name: "My Chapter",
+        context: "App",
+        mode: "event-modeling",
+        entityDir: "chapters/App/My-Chapter",
+        localId: "local-chapter-uuid",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters",
+      body: { name: "My Chapter", context: "App", mode: "event-modeling", id: "local-chapter-uuid" },
+    });
+  });
+
+  it("chapter.create without localId does not include id in body", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "chapter.create",
+        name: "My Chapter",
+        entityDir: "chapters/App/My-Chapter",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect((client.calls[0]!.body as Record<string, unknown>)["id"]).toBeUndefined();
+  });
+
+  it("lane.create passes localId as id in the request body", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "lane.create",
+        chapterId: "chap-1",
+        label: "My Lane",
+        type: "system",
+        index: 0,
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/My-Lane",
+        localId: "local-lane-uuid",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters/chap-1/lanes",
+      body: { label: "My Lane", type: "system", index: 0, id: "local-lane-uuid" },
+    });
+  });
+
+  it("slice.create passes localId as id in the request body", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "slice.create",
+        chapterId: "chap-1",
+        label: "My Slice",
+        index: 0,
+        entityDir: "chapters/App/Ch/slices/0001_My-Slice",
+        localId: "local-slice-uuid",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters/chap-1/slices",
+      body: { label: "My Slice", index: 0, id: "local-slice-uuid" },
+    });
+  });
+
+  it("element.create passes localId as id in the request body", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "element.create",
+        chapterId: "chap-1",
+        name: "My Element",
+        type: "command",
+        laneId: "lane-1",
+        sliceId: "slice-1",
+        entityDir: "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E",
+        localId: "local-element-uuid",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters/chap-1/elements",
+      body: { name: "My Element", type: "command", lane_id: "lane-1", slice_id: "slice-1", id: "local-element-uuid" },
+    });
+  });
 });

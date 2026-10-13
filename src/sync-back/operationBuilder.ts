@@ -166,21 +166,21 @@ export interface ScenarioJson {
 }
 
 export type SyncBackOperation =
-  | { kind: "chapter.create"; name: string; context?: string; mode?: string; entityDir: string }
+  | { kind: "chapter.create"; name: string; context?: string; mode?: string; entityDir: string; localId?: string }
   | { kind: "chapter.rename"; chapterId: string; newName: string; entityDir: string }
   | { kind: "chapter.update-context"; chapterId: string; newContext: string; entityDir: string }
   | { kind: "chapter.delete"; chapterId: string; entityDir: string }
-  | { kind: "lane.create"; chapterId: string; label: string; type: string; index: number; height?: number; entityDir: string }
+  | { kind: "lane.create"; chapterId: string; label: string; type: string; index: number; height?: number; entityDir: string; localId?: string }
   | { kind: "lane.rename"; chapterId: string; laneId: string; newLabel: string; entityDir: string }
   | { kind: "lane.update-details"; chapterId: string; laneId: string; newDetails: string; entityDir: string }
   | { kind: "lane.resize"; chapterId: string; laneId: string; newHeight: number; entityDir: string }
   | { kind: "lane.delete"; chapterId: string; laneId: string; entityDir: string }
-  | { kind: "slice.create"; chapterId: string; label: string; index?: number; status?: string; details?: string; width?: number; entityDir: string }
+  | { kind: "slice.create"; chapterId: string; label: string; index?: number; status?: string; details?: string; width?: number; entityDir: string; localId?: string }
   | { kind: "slice.rename"; chapterId: string; sliceId: string; newLabel: string; entityDir: string }
   | { kind: "slice.update-details"; chapterId: string; sliceId: string; newDetails: string; entityDir: string }
   | { kind: "slice.update-status"; chapterId: string; sliceId: string; newStatus: string; entityDir: string }
   | { kind: "slice.delete"; chapterId: string; sliceId: string; entityDir: string }
-  | { kind: "element.create"; chapterId: string; name: string; type: string; laneId: string; sliceId: string; description?: string; details?: string; index?: number; context?: string; entityDir: string }
+  | { kind: "element.create"; chapterId: string; name: string; type: string; laneId: string; sliceId: string; description?: string; details?: string; index?: number; context?: string; entityDir: string; localId?: string }
   | { kind: "element.rename"; chapterId: string; elementId: string; newName: string; entityDir: string }
   | { kind: "element.update-description"; chapterId: string; elementId: string; newDescription: string; entityDir: string }
   | { kind: "element.update-details"; chapterId: string; elementId: string; newDetails: string; entityDir: string }
@@ -672,14 +672,14 @@ function handleCreate(
   switch (kind) {
     case "chapter": {
       const data = readJsonFile(root, `${entityDir}/chapter.json`) as ChapterJson | null;
-      if (data?.name) ops.push({ kind: "chapter.create", name: data.name, context: data.context, mode: data.mode, entityDir });
+      if (data?.name) ops.push({ kind: "chapter.create", name: data.name, context: data.context, mode: data.mode, entityDir, localId: data.id || undefined });
       break;
     }
     case "lane": {
       const data = readJsonFile(root, `${entityDir}/lane.json`) as LaneJson | null;
       const chapterId = resolveChapterId(root, entityDir);
       if (data?.label && data.type && chapterId) {
-        ops.push({ kind: "lane.create", chapterId, label: data.label, type: data.type, index: data.index ?? 0, height: data.height, entityDir });
+        ops.push({ kind: "lane.create", chapterId, label: data.label, type: data.type, index: data.index ?? 0, height: data.height, entityDir, localId: data.id || undefined });
       }
       break;
     }
@@ -688,7 +688,7 @@ function handleCreate(
       const chapterId = resolveChapterId(root, entityDir);
       const details = readMarkdownIfExists(root, `${entityDir}/details.md`);
       if (data?.label && chapterId) {
-        ops.push({ kind: "slice.create", chapterId, label: data.label, index: data.index, status: data.status, width: data.width, details: details || undefined, entityDir });
+        ops.push({ kind: "slice.create", chapterId, label: data.label, index: data.index, status: data.status, width: data.width, details: details || undefined, entityDir, localId: data.id || undefined });
       }
       break;
     }
@@ -710,6 +710,7 @@ function handleCreate(
           index: data.index,
           context: data.context,
           entityDir,
+          localId: data.id || undefined,
         });
       }
       break;

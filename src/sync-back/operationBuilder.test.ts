@@ -203,6 +203,47 @@ describe("buildOperations", () => {
     });
   });
 
+  // ─── localId forwarding ────────────────────────────────────────────────────
+  it("chapter.create carries localId from chapter.json", async () => {
+    setupChapter(root);
+    const diffs: EntityDiff[] = [createDiff(CHAPTER_DIR, "chapter")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    expect(ops[0]).toMatchObject({ kind: "chapter.create", localId: CHAPTER_ID });
+  });
+
+  it("slice.create carries localId from slice.json", async () => {
+    setupSlice(root);
+    const diffs: EntityDiff[] = [createDiff(SLICE_DIR, "slice")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const op = ops.find((o) => o.kind === "slice.create");
+    expect(op).toMatchObject({ kind: "slice.create", localId: SLICE_ID });
+  });
+
+  it("lane.create carries localId from lane.json", async () => {
+    setupLane(root);
+    const diffs: EntityDiff[] = [createDiff(LANE_DIR, "lane")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const op = ops.find((o) => o.kind === "lane.create");
+    expect(op).toMatchObject({ kind: "lane.create", localId: LANE_ID });
+  });
+
+  it("element.create carries localId from element.json", async () => {
+    setupElement(root);
+    const diffs: EntityDiff[] = [createDiff(ELEMENT_DIR, "element")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const op = ops.find((o) => o.kind === "element.create");
+    expect(op).toMatchObject({ kind: "element.create", localId: ELEMENT_ID });
+  });
+
+  it("create ops have no localId when json has no id field", async () => {
+    // Write a chapter.json without an id field
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, { name: "No ID Chapter", context: "App", mode: "event-modeling" });
+    const diffs: EntityDiff[] = [createDiff(CHAPTER_DIR, "chapter")];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    expect(ops[0]).toMatchObject({ kind: "chapter.create" });
+    expect((ops[0] as any).localId).toBeUndefined();
+  });
+
   // ─── Milestone create ──────────────────────────────────────────────────────
   it("create diff maps to milestone.create", async () => {
     setupMilestone(root);

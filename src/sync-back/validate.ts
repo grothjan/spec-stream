@@ -6,8 +6,11 @@
  *
  *  1. JSON syntax errors in any .json file.
  *  2. Missing required fields in primary .json files.
- *  3. Dangling UUID references: element.json laneId/sliceId not in uuid-index.json.
- *  4. Dangling UUID references: scenario expectation sliceId/elementId not in uuid-index.
+ *  3. Dangling UUID references: element.json laneId/sliceId not in uuid-index.json
+ *     AND not present as an id in any local .json file (i.e., not a locally-assigned UUID
+ *     that has not yet been pushed to the board via sync-back).
+ *  4. Dangling UUID references: scenario expectation sliceId/elementId not in uuid-index
+ *     AND not a locally-assigned UUID.
  *  5. UUID collisions: two different dirs claim the same UUID.
  *
  * Exits 0 if clean, 1 if any issues found.
@@ -85,6 +88,28 @@ export function validateModel(opts: ValidateOptions): ValidateResult {
   // ── 2. Walk all .json files and validate them ────────────────────────────────
   const allJsonFiles = collectJsonFiles(syncRootAbs);
 
+  // ── 2a. Collect all locally-present entity IDs (id fields in *.json files) ──
+  // These are UUIDs the agent assigned locally that may not yet be in uuid-index.json
+  // because sync-back hasn't been called yet (or the sync process hasn't echoed them
+  // back). A laneId/sliceId reference to one of these is a valid local reference and
+  // should not be flagged as dangling.
+  const localIds = new Set<string>();
+  for (const relPath of allJsonFiles) {
+    if (relPath === uuidIndexPath || relPath === "workspace.json") continue;
+    try {
+      const raw = readFileSync(join(syncRootAbs, relPath), "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        const id = (parsed as Record<string, unknown>)["id"];
+        if (typeof id === "string" && id.length > 0) {
+          localIds.add(id);
+        }
+      }
+    } catch {
+      // parse errors are reported in the main loop below
+    }
+  }
+
   for (const relPath of allJsonFiles) {
     if (relPath === uuidIndexPath || relPath === "workspace.json") {
       // Already handled or no required fields to check.
@@ -100,23 +125,27 @@ export function validateModel(opts: ValidateOptions): ValidateResult {
 
     // Dispatch to per-kind validators based on filename.
     if (relPath.endsWith("/element.json")) {
-      checkElementJson(relPath, data, uuidToDir, issues);
+      checkElementJson(relPath, data, uuidToDir, localIds, issues);
     } else if (relPath.endsWith("/scenario.json")) {
-      checkScenarioJson(relPath, data, uuidToDir, issues);
+      checkScenarioJson(relPath, data, uuidToDir, localIds, issues);
     } else if (relPath.endsWith("/chapter.json")) {
       checkRequiredString(relPath, data, "id", issues);
       checkRequiredString(relPath, data, "name", issues);
+      checkRequiredString(relPath, data, "context", issues);
     } else if (relPath.endsWith("/slice.json")) {
       checkRequiredString(relPath, data, "id", issues);
       checkRequiredString(relPath, data, "label", issues);
+      checkOptionalEnum(relPath, data, "status", SLICE_STATUSES, issues);
     } else if (relPath.endsWith("/lane.json")) {
       checkRequiredString(relPath, data, "id", issues);
       checkRequiredString(relPath, data, "label", issues);
+      checkRequiredEnum(relPath, data, "type", LANE_TYPES, issues);
     } else if (relPath.endsWith("/milestone.json")) {
       checkRequiredString(relPath, data, "id", issues);
       checkRequiredString(relPath, data, "name", issues);
+    } else if (HTML_SNIPPET_JSON_RE.test(relPath)) {
+      checkRequiredString(relPath, data, "name", issues);
     }
-    // html-snippet .json files: just valid JSON is enough for sync-back.
   }
 
   return { issues, checked };
@@ -124,29 +153,39 @@ export function validateModel(opts: ValidateOptions): ValidateResult {
 
 // ─── Check helpers ────────────────────────────────────────────────────────────
 
+const LANE_TYPES    = ["user-lane", "information-flow", "system"] as const;
+const ELEMENT_TYPES = ["command", "event", "information", "ui", "automation", "hotspot"] as const;
+const SLICE_STATUSES = ["draft", "planned", "in-progress", "blocked", "ready", "reviewed", "deployed"] as const;
+const EXPECTATION_KINDS = ["events", "information", "rejection"] as const;
+
+/** Matches html-snippets/[slug].json (no subdirectory between html-snippets and the file). */
+const HTML_SNIPPET_JSON_RE = /^html-snippets\/[^/]+\.json$/;
+
 function checkElementJson(
   relPath: string,
   data: Record<string, unknown>,
   uuidToDir: Map<string, string>,
+  localIds: Set<string>,
   issues: ValidationIssue[],
 ): void {
   checkRequiredString(relPath, data, "id", issues);
   checkRequiredString(relPath, data, "name", issues);
-  checkRequiredString(relPath, data, "type", issues);
+  checkRequiredEnum(relPath, data, "type", ELEMENT_TYPES, issues);
 
-  // laneId and sliceId must be present and exist in the uuid-index.
+  // laneId and sliceId must be present and either exist in uuid-index or be a
+  // locally-assigned UUID present in a local .json file (not yet pushed via sync-back).
   const laneId = typeof data["laneId"] === "string" ? data["laneId"] : null;
   const sliceId = typeof data["sliceId"] === "string" ? data["sliceId"] : null;
 
   if (!laneId) {
     issues.push({ path: relPath, message: `Missing required field "laneId"` });
-  } else if (!uuidToDir.has(laneId)) {
+  } else if (!uuidToDir.has(laneId) && !localIds.has(laneId)) {
     issues.push({ path: relPath, message: `laneId "${laneId}" not found in uuid-index.json` });
   }
 
   if (!sliceId) {
     issues.push({ path: relPath, message: `Missing required field "sliceId"` });
-  } else if (!uuidToDir.has(sliceId)) {
+  } else if (!uuidToDir.has(sliceId) && !localIds.has(sliceId)) {
     issues.push({ path: relPath, message: `sliceId "${sliceId}" not found in uuid-index.json` });
   }
 }
@@ -155,6 +194,7 @@ function checkScenarioJson(
   relPath: string,
   data: Record<string, unknown>,
   uuidToDir: Map<string, string>,
+  localIds: Set<string>,
   issues: ValidationIssue[],
 ): void {
   checkRequiredString(relPath, data, "id", issues);
@@ -177,9 +217,7 @@ function checkScenarioJson(
     if (!exp["id"]) {
       issues.push({ path: relPath, message: `expectations[${i}] missing required field "id"` });
     }
-    if (!exp["kind"]) {
-      issues.push({ path: relPath, message: `expectation "${expId}" missing required field "kind"` });
-    }
+    checkRequiredEnumOnRecord(relPath, exp, "kind", EXPECTATION_KINDS, `expectation "${expId}"`, issues);
     if (!exp["expected"]) {
       issues.push({ path: relPath, message: `expectation "${expId}" missing required field "expected"` });
     }
@@ -187,12 +225,12 @@ function checkScenarioJson(
     const sliceId = typeof exp["sliceId"] === "string" ? exp["sliceId"] : null;
     if (!sliceId) {
       issues.push({ path: relPath, message: `expectation "${expId}" missing required field "sliceId"` });
-    } else if (!uuidToDir.has(sliceId)) {
+    } else if (!uuidToDir.has(sliceId) && !localIds.has(sliceId)) {
       issues.push({ path: relPath, message: `expectation "${expId}" sliceId "${sliceId}" not found in uuid-index.json` });
     }
 
     const elementId = typeof exp["elementId"] === "string" ? exp["elementId"] : null;
-    if (elementId && !uuidToDir.has(elementId)) {
+    if (elementId && !uuidToDir.has(elementId) && !localIds.has(elementId)) {
       issues.push({ path: relPath, message: `expectation "${expId}" elementId "${elementId}" not found in uuid-index.json` });
     }
   }
@@ -206,6 +244,63 @@ function checkRequiredString(
 ): void {
   if (typeof data[field] !== "string" || data[field] === "") {
     issues.push({ path: relPath, message: `Missing required field "${field}"` });
+  }
+}
+
+/**
+ * Check that a field is present and one of the allowed enum values.
+ * Reports "Missing" if absent/empty, "Invalid value" if present but wrong.
+ */
+function checkRequiredEnum(
+  relPath: string,
+  data: Record<string, unknown>,
+  field: string,
+  allowed: readonly string[],
+  issues: ValidationIssue[],
+): void {
+  const val = data[field];
+  if (typeof val !== "string" || val === "") {
+    issues.push({ path: relPath, message: `Missing required field "${field}" (must be one of: ${allowed.join(", ")})` });
+  } else if (!(allowed as readonly string[]).includes(val)) {
+    issues.push({ path: relPath, message: `Invalid value "${val}" for field "${field}" (must be one of: ${allowed.join(", ")})` });
+  }
+}
+
+/**
+ * Check that an optional field, when present, is one of the allowed enum values.
+ * No error if the field is absent.
+ */
+function checkOptionalEnum(
+  relPath: string,
+  data: Record<string, unknown>,
+  field: string,
+  allowed: readonly string[],
+  issues: ValidationIssue[],
+): void {
+  const val = data[field];
+  if (val === undefined || val === null) return; // absent is fine
+  if (typeof val !== "string" || !(allowed as readonly string[]).includes(val)) {
+    issues.push({ path: relPath, message: `Invalid value "${val}" for field "${field}" (must be one of: ${allowed.join(", ")})` });
+  }
+}
+
+/**
+ * Like checkRequiredEnum but operates on a nested record (e.g. an expectation object)
+ * and prefixes the error with a custom context string.
+ */
+function checkRequiredEnumOnRecord(
+  relPath: string,
+  data: Record<string, unknown>,
+  field: string,
+  allowed: readonly string[],
+  context: string,
+  issues: ValidationIssue[],
+): void {
+  const val = data[field];
+  if (typeof val !== "string" || val === "") {
+    issues.push({ path: relPath, message: `${context} missing required field "${field}" (must be one of: ${allowed.join(", ")})` });
+  } else if (!(allowed as readonly string[]).includes(val)) {
+    issues.push({ path: relPath, message: `${context} invalid value "${val}" for field "${field}" (must be one of: ${allowed.join(", ")})` });
   }
 }
 

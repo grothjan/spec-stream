@@ -67,6 +67,14 @@ reference for agents that read or write the model.
 These files can be created or modified by an agent. On the next `@proophboard/spec-stream sync-back` run 
 changes are pushed to prooph board workspace.
 
+> **UUID authoring:** When creating new entities (chapters, lanes, slices, elements, scenarios),
+> generate a UUID v4 and write it as the `"id"` field in the corresponding `.json` file.
+> `sync-back` forwards that UUID to the prooph board API, which accepts and stores it as-is —
+> so the UUID you assign locally is the UUID the entity will have on the board permanently.
+> You can therefore safely cross-reference locally-assigned UUIDs in `element.json` (`laneId`,
+> `sliceId`) and in scenario expectations before `sync-back` has been called. `model validate`
+> also recognises locally-assigned UUIDs and will not flag them as dangling references.
+
 | File | What it maps to                                                                                  |
 |------|--------------------------------------------------------------------------------------------------|
 | `element.json` | element name, type, position (laneId/sliceId/index)                                              |
@@ -305,7 +313,8 @@ changes against manifest and translates them into prooph board API calls:
 - Modified `description.md` / `details.md` → update description/details
 - Modified `play-function.ts` / `play-type.ts` → update element config
 - Modified `scenario.json` → set/remove expectations
-- Added files → create the entity
+- Added files → create the entity (the `"id"` from the `.json` is forwarded to the API,
+  so the UUID you assigned locally is preserved on the board)
 - Deleted primary `.json` → delete the entity
 
 If any API call fails, the command exits non-zero. Fix the issue
@@ -326,8 +335,11 @@ and try again.
 
 Checks:
 - All `.json` files are valid JSON
-- `element.json` `laneId` and `sliceId` exist in `uuid-index.json`
-- Scenario `sliceId` and `elementId` in expectations exist in `uuid-index.json`
+- `element.json` `laneId` and `sliceId` exist in `uuid-index.json` **or** are present as
+  an `"id"` value in another local `.json` file (locally-assigned UUIDs not yet pushed via
+  sync-back are accepted — they are not dangling references)
+- Scenario `sliceId` and `elementId` in expectations exist in `uuid-index.json` or are
+  locally-assigned UUIDs (same exemption as above)
 - No duplicate UUIDs in `uuid-index.json` pointing to different dirs
 - Directory slug matches the sanitized name in the corresponding `.json`
 

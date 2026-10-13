@@ -109,6 +109,7 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
         name: op.name,
         ...(op.context !== undefined && { context: op.context }),
         ...(op.mode !== undefined && { mode: op.mode }),
+        ...(op.localId !== undefined && { id: op.localId }),
       }) as { chapterId?: string; id?: string } | undefined;
       // The API returns `chapterId` (not `id`) for chapter creates.
       return (res as { chapterId?: string })?.chapterId ?? res?.id;
@@ -133,6 +134,7 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
         type: op.type,
         index: op.index,
         ...(op.height !== undefined && { height: op.height }),
+        ...(op.localId !== undefined && { id: op.localId }),
       }) as { id?: string } | undefined;
       return res?.id;
     }
@@ -170,6 +172,7 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
         ...(op.status !== undefined && { status: op.status }),
         ...(op.details !== undefined && { details: op.details }),
         ...(op.width !== undefined && { width: op.width }),
+        ...(op.localId !== undefined && { id: op.localId }),
       }) as { id?: string } | undefined;
       return res?.id;
     }
@@ -210,6 +213,7 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
         ...(op.details !== undefined && { details: op.details }),
         ...(op.index !== undefined && { index: op.index }),
         ...(op.context !== undefined && { context: op.context }),
+        ...(op.localId !== undefined && { id: op.localId }),
       }) as { id?: string } | undefined;
       return res?.id;
     }
