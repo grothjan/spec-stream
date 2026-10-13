@@ -206,9 +206,19 @@ function runInMemoryTypecheck(
     return origGetSourceFile(fileName, languageVersion, ...rest);
   };
 
+  // Virtual files take priority; lib.*.d.ts requests fall through to the real
+  // filesystem via the original host so TypeScript can load its stdlib types.
+  // Without this, fileExists returns false for every lib file and the entire
+  // stdlib is silently dropped — causing spurious "Property does not exist"
+  // errors on string/array methods when operating on `any`-typed values.
+  const origFileExists = host.fileExists.bind(host);
+  const origReadFile = host.readFile.bind(host);
   host.fileExists = (f: string) =>
-    Object.prototype.hasOwnProperty.call(virtualFiles, f) || false;
-  host.readFile = (f: string) => virtualFiles[f];
+    Object.prototype.hasOwnProperty.call(virtualFiles, f) || origFileExists(f);
+  host.readFile = (f: string) =>
+    Object.prototype.hasOwnProperty.call(virtualFiles, f)
+      ? virtualFiles[f]
+      : origReadFile(f);
 
   const program = ts.createProgram(Object.keys(virtualFiles), compilerOptions, host);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
