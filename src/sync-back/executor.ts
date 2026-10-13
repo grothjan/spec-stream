@@ -330,7 +330,7 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
     case "scenario.record-interaction":
       await client.postJson(
         `/chapters/${enc(op.chapterId)}/scenarios/${enc(op.scenarioId)}/interactions`,
-        { step_index: op.stepIndex, storage: op.storage },
+        { ui_element_id: op.uiElementId, storage: op.storage },
       );
       return undefined;
 
@@ -420,7 +420,7 @@ function describeOperation(op: SyncBackOperation): string {
     case "scenario.create":             return `Create scenario "${op.name}" in chapter ${op.chapterId}`;
     case "scenario.delete":             return `Delete scenario ${op.scenarioId}`;
     case "scenario.update":             return `Update scenario ${op.scenarioId}`;
-    case "scenario.record-interaction": return `Record interaction step ${op.stepIndex} on scenario ${op.scenarioId}`;
+    case "scenario.record-interaction": return `Record interaction for UI element ${op.uiElementId} on scenario ${op.scenarioId}`;
     case "scenario.clear-interactions": return `Clear interactions on scenario ${op.scenarioId}`;
   }
 }

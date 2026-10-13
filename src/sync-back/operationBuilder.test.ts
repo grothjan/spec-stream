@@ -440,7 +440,7 @@ describe("buildOperations", () => {
     expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeUndefined();
     const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
     expect(recordOps).toHaveLength(1);
-    expect(recordOps[0]).toMatchObject({ stepIndex: 0, storage: { x: 1 } });
+    expect(recordOps[0]).toMatchObject({ uiElementId: "ui-1", storage: { x: 1 } });
   });
 
   // ─── Scenario update: step added → upsert only the new step ──────────────
@@ -467,7 +467,7 @@ describe("buildOperations", () => {
     expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeUndefined();
     const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
     expect(recordOps).toHaveLength(1);
-    expect(recordOps[0]).toMatchObject({ stepIndex: 1, storage: { y: 2 } });
+    expect(recordOps[0]).toMatchObject({ uiElementId: "ui-2", storage: { y: 2 } });
   });
 
   // ─── Scenario update: step removed → clear + re-record all ───────────────
@@ -494,7 +494,7 @@ describe("buildOperations", () => {
     expect(ops.find((o) => o.kind === "scenario.clear-interactions")).toBeDefined();
     const recordOps = ops.filter((o) => o.kind === "scenario.record-interaction");
     expect(recordOps).toHaveLength(1);
-    expect(recordOps[0]).toMatchObject({ stepIndex: 0, storage: { x: 1 } });
+    expect(recordOps[0]).toMatchObject({ uiElementId: "ui-1", storage: { x: 1 } });
   });
 
   // ─── Scenario update: all steps removed → clear only ─────────────────────
@@ -568,13 +568,13 @@ describe("buildOperations", () => {
       kind: "scenario.record-interaction",
       chapterId: CHAPTER_ID,
       scenarioId: PENDING_SCENARIO_ID,
-      stepIndex: 0,
+      uiElementId: "elem-ui-1",
       storage: { clicked: true },
     });
     expect(recordOps[1]).toMatchObject({
       kind: "scenario.record-interaction",
       scenarioId: PENDING_SCENARIO_ID,
-      stepIndex: 1,
+      uiElementId: "elem-ui-2",
       storage: { value: "hello" },
     });
   });

@@ -371,7 +371,7 @@ describe("executeOperations", () => {
         kind: "scenario.record-interaction",
         chapterId: "chap-1",
         scenarioId: PENDING_SCENARIO_ID,
-        stepIndex: 0,
+        uiElementId: "elem-ui-1",
         storage: { clicked: true },
         entityDir: scenarioDir,
       },
@@ -403,7 +403,7 @@ describe("executeOperations", () => {
     expect(calls[2]).toMatchObject({
       method: "POST",
       path: `/chapters/chap-1/scenarios/${realId}/interactions`,
-      body: { step_index: 0, storage: { clicked: true } },
+      body: { ui_element_id: "elem-ui-1", storage: { clicked: true } },
     });
 
     // set-expectation uses the real ID
@@ -517,7 +517,7 @@ describe("executeOperations", () => {
         kind: "scenario.record-interaction",
         chapterId: "chap-1",
         scenarioId: PENDING_SCENARIO_ID,
-        stepIndex: 0,
+        uiElementId: "elem-ui-1",
         storage: {},
         entityDir: scenarioDir,
       },

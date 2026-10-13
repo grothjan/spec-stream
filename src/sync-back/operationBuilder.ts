@@ -198,7 +198,7 @@ export type SyncBackOperation =
   | { kind: "scenario.create"; chapterId: string; name: string; clock?: string; initialState?: Record<string, unknown>; seededEvents?: ScenarioSeededEvent[]; entityDir: string }
   | { kind: "scenario.delete"; chapterId: string; scenarioId: string; entityDir: string }
   | { kind: "scenario.update"; chapterId: string; scenarioId: string; name?: string; clock?: string | null; initialState?: Record<string, unknown>; seededEvents?: ScenarioSeededEvent[]; entityDir: string }
-  | { kind: "scenario.record-interaction"; chapterId: string; scenarioId: string; stepIndex: number; storage: Record<string, unknown>; entityDir: string }
+  | { kind: "scenario.record-interaction"; chapterId: string; scenarioId: string; uiElementId: string; storage: Record<string, unknown>; entityDir: string }
   | { kind: "scenario.clear-interactions"; chapterId: string; scenarioId: string; entityDir: string };
 
 // ─── Sentinel for newly-created scenario IDs ─────────────────────────────────
@@ -587,27 +587,26 @@ async function handleUpdate(
 
       // ── Interactions ──────────────────────────────────────────────────────
       // Diff against the old interactions from the manifest.
-      // - Steps added or changed → record-interaction (upsert per step, no clear needed)
-      // - Steps removed (count reduced or step_index gone) → clear + re-record all
+      // - Interactions added or changed → record-interaction (upsert per uiElementId)
+      // - Interactions removed → clear + re-record all (no per-element delete in the API)
       // - No change → emit nothing
       const interactions = Array.isArray(newData.interactions) ? newData.interactions : [];
       const oldInteractions = Array.isArray(diff.oldInteractions) ? diff.oldInteractions : [];
 
-      // Detect whether any steps were removed (old had more steps, or a step at a given
-      // index no longer exists). If so, we need clear + full re-record since the API has
-      // no per-step delete.
-      const stepRemoved = oldInteractions.length > interactions.length;
+      // Detect whether any interactions were removed. If so, we need clear + full
+      // re-record since the API has no per-element delete.
+      const interactionRemoved = oldInteractions.length > interactions.length;
 
-      if (stepRemoved) {
-        // A step was removed — must clear and re-record all.
+      if (interactionRemoved) {
+        // An interaction was removed — must clear and re-record all.
         ops.push({ kind: "scenario.clear-interactions", chapterId, scenarioId, entityDir });
-        for (let i = 0; i < interactions.length; i++) {
+        for (const interaction of interactions) {
           ops.push({
             kind: "scenario.record-interaction",
             chapterId,
             scenarioId,
-            stepIndex: i,
-            storage: interactions[i]!.storage,
+            uiElementId: interaction.uiElementId,
+            storage: interaction.storage,
             entityDir,
           });
         }
@@ -625,7 +624,7 @@ async function handleUpdate(
               kind: "scenario.record-interaction",
               chapterId,
               scenarioId,
-              stepIndex: i,
+              uiElementId: newStep.uiElementId,
               storage: newStep.storage,
               entityDir,
             });
@@ -749,15 +748,15 @@ function handleCreate(
 
       // Emit interaction ops using the PENDING_SCENARIO_ID sentinel. The executor
       // will substitute the real ID returned by scenario.create before executing them.
-      // record-interaction is an upsert per step — no clear needed for a new scenario.
+      // record-interaction is an upsert per uiElementId — no clear needed for a new scenario.
       const interactions = Array.isArray(data.interactions) ? data.interactions : [];
-      for (let i = 0; i < interactions.length; i++) {
+      for (const interaction of interactions) {
         ops.push({
           kind: "scenario.record-interaction",
           chapterId,
           scenarioId: PENDING_SCENARIO_ID,
-          stepIndex: i,
-          storage: interactions[i]!.storage,
+          uiElementId: interaction.uiElementId,
+          storage: interaction.storage,
           entityDir,
         });
       }
