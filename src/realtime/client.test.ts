@@ -200,6 +200,43 @@ describe("RealtimeClient", () => {
     expect(state.setAuthCalls).toEqual(["t1", "t2"]);
   });
 
+  it("cancels pending reconnect timer when SUBSCRIBED fires (Supabase internal reconnect)", async () => {
+    // Supabase's own socket reconnect can fire SUBSCRIBED on the existing channel
+    // before our backoff timer runs. If we let the timer fire, openChannel() would
+    // remove the already-working channel — disrupting it and causing a fresh CLOSED,
+    // perpetuating the loop. SUBSCRIBED must cancel any in-flight reconnect timer.
+    const { client, state } = mockSupabase();
+    const scheduled: number[] = [];
+    const rc = new RealtimeClient({
+      supabaseUrl: "u",
+      supabaseAnonKey: "a",
+      workspaceId: "ws-1",
+      accessToken: "t",
+      createClient: () => client,
+      onEvent: () => {},
+      backoff: new Backoff({ baseMs: 5000, jitterMs: 0 }),
+      onReconnectScheduled: (d) => scheduled.push(d),
+    });
+
+    await rc.connect();
+    expect(state.channels).toHaveLength(1);
+
+    // Channel drops → we schedule a 5 s reconnect.
+    state.channels[0].emitStatus("CLOSED");
+    expect(scheduled).toEqual([5000]);
+    expect(state.channels).toHaveLength(1); // timer hasn't fired
+
+    // Supabase internally reconnects before our 5 s timer fires → SUBSCRIBED on the
+    // same channel. This must cancel our pending timer.
+    state.channels[0].emitStatus("SUBSCRIBED");
+    expect(rc.isConnected).toBe(true);
+
+    // Advance past the would-be reconnect delay — no new channel should be created.
+    vi.advanceTimersByTime(6000);
+    expect(state.channels).toHaveLength(1); // still the original channel, not replaced
+    expect(state.removed).toHaveLength(0);  // nothing was torn down
+  });
+
   it("re-auths the socket on every reconnect (regression: SUBSCRIBED→CLOSED bounce)", async () => {
     // A hard socket close (1006) resets the Supabase realtime socket's internal auth
     // state. openChannel() must call setAuth on every reconnect attempt, not just at

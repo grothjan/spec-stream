@@ -133,6 +133,12 @@ export class RealtimeClient {
     this.opts.onStatus?.(status, err);
     if (status === "SUBSCRIBED") {
       this.connected = true;
+      // Cancel any pending reconnect timer: Supabase's internal socket reconnect can
+      // fire SUBSCRIBED on the existing channel before our own timer runs. If we let
+      // the timer fire anyway, openChannel() would remove the already-working channel
+      // and create a new one — disrupting the good connection and causing the
+      // SUBSCRIBED → CLOSED bounce loop seen in production.
+      this.cancelReconnectTimer();
       // Don't reset the backoff immediately — wait until the connection has been
       // stable for STABLE_AFTER_MS. This prevents the tight reconnect loop where
       // SUBSCRIBED → reset → CLOSED → reconnect at attempt=0 delay (~1 s) forever.
@@ -149,6 +155,13 @@ export class RealtimeClient {
       // stability timer so the backoff counter keeps growing.
       this.cancelStableTimer();
       this.scheduleReconnect();
+    }
+  }
+
+  private cancelReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      this.timers.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
     }
   }
 
@@ -178,10 +191,7 @@ export class RealtimeClient {
   /** Stop reconnecting and remove the channel. */
   async disconnect(): Promise<void> {
     this.stopped = true;
-    if (this.reconnectTimer) {
-      this.timers.clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
-    }
+    this.cancelReconnectTimer();
     this.cancelStableTimer();
     if (this.channel) {
       this.client.removeChannel(this.channel);
