@@ -282,7 +282,7 @@ type Handler = (state: ModelState, event: ChangelogEvent) => void;
 
 const HANDLERS: Record<string, Handler> = {
   // ── Chapter ──
-  "chapter-added": (s, e) => putChapterFromRaw(s, { ...newValue(e), context: e.context }),
+  "chapter-added": (s, e) => putChapterFromRaw(s, { ...newValue(e), context: str(newValue(e).context) ?? e.context }),
   "chapter-renamed": (s, e) => {
     const c = e.chapterId && s.chapters.get(e.chapterId);
     const name = str(newValue(e).name);

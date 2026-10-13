@@ -166,7 +166,7 @@ export interface ScenarioJson {
 }
 
 export type SyncBackOperation =
-  | { kind: "chapter.create"; name: string; context?: string; mode?: string; entityDir: string; localId?: string }
+  | { kind: "chapter.create"; name: string; context?: string; mode?: string; skipDefaultContent?: boolean; entityDir: string; localId?: string }
   | { kind: "chapter.rename"; chapterId: string; newName: string; entityDir: string }
   | { kind: "chapter.update-context"; chapterId: string; newContext: string; entityDir: string }
   | { kind: "chapter.delete"; chapterId: string; entityDir: string }
@@ -672,7 +672,7 @@ function handleCreate(
   switch (kind) {
     case "chapter": {
       const data = readJsonFile(root, `${entityDir}/chapter.json`) as ChapterJson | null;
-      if (data?.name) ops.push({ kind: "chapter.create", name: data.name, context: data.context, mode: data.mode, entityDir, localId: data.id || undefined });
+      if (data?.name) ops.push({ kind: "chapter.create", name: data.name, context: data.context, mode: data.mode, skipDefaultContent: true, entityDir, localId: data.id || undefined });
       break;
     }
     case "lane": {

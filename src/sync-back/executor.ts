@@ -110,6 +110,7 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
         ...(op.context !== undefined && { context: op.context }),
         ...(op.mode !== undefined && { mode: op.mode }),
         ...(op.localId !== undefined && { id: op.localId }),
+        ...(op.skipDefaultContent && { skip_default_content: true }),
       }) as { chapterId?: string; id?: string } | undefined;
       // The API returns `chapterId` (not `id`) for chapter creates.
       return (res as { chapterId?: string })?.chapterId ?? res?.id;

@@ -161,7 +161,7 @@ export function normalizeRow(row: ChangelogEventRow): ChangelogEvent {
     sliceId: asString(data.sliceId) ?? row.slice_id ?? undefined,
     sliceName: asString(data.sliceName),
     userId: asString(data.userId) ?? row.user_id ?? undefined,
-    context: asString(data.context),
+    context: asString(data.context) ?? asString((data.newValue as Record<string, unknown> | null)?.context),
     addedByAgent: asBoolean(data.addedByAgent) ?? false,
     createdAt: row.created_at,
     data,
