@@ -90,6 +90,12 @@ export function typecheckElement(
     strict: false,
     noImplicitAny: false,
     skipLibCheck: true,
+    // Prevent TS from auto-including @types/node (and any other @types/* packages
+    // it discovers on the real filesystem). Play functions run in a sandboxed
+    // environment unrelated to Node.js — auto-including @types/node would inject
+    // a `process` global that collides with the `process` handler declared in
+    // RUNTIME_AMBIENT_DTS (TS2300 duplicate identifier).
+    types: [],
   };
 
   // ── play-function.ts ──────────────────────────────────────────────────────
