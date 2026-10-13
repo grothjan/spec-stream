@@ -83,7 +83,16 @@ export function typecheckElement(
 
   const compilerOptions: object = {
     target: /* ES2020 */ 7,
-    lib: ["lib.es2020.d.ts"],
+    // noLib: skip loading any lib.d.ts. Play functions run in a browser/Node
+    // context where all standard globals (Array, String, etc.) are available at
+    // runtime. Loading lib files in the virtual in-memory host is unreliable
+    // because the host only serves files from the virtualFiles map — unknown lib
+    // paths silently fail, leaving stdlib types absent and causing spurious
+    // "Property 'filter' does not exist" / "Property 'length' does not exist"
+    // errors on `any`-typed values. Since we only care about model-derived type
+    // correctness (wrong payload fields, unknown element names), not stdlib usage,
+    // suppressing the lib is the right trade-off here.
+    noLib: true,
     noEmit: true,
     allowNonTsExtensions: true,
     moduleResolution: /* NodeJs */ 2,
