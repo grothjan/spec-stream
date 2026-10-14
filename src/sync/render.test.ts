@@ -159,8 +159,8 @@ describe("milestones and comments", () => {
     const s = model();
     applyEvent(s, ev("milestone-added", { data: { newValue: { milestone: { id: "m1", name: "MVP", description: "First release", slices: [] } } } }));
     const t = render(s);
-    expect(t.has("milestones/MVP/milestone.json")).toBe(true);
-    expect(t.get("milestones/MVP/description.md")).toContain("First release");
+    expect(t.has("milestones/m1/milestone.json")).toBe(true);
+    expect(t.get("milestones/m1/description.md")).toContain("First release");
   });
 
   it("renders element comments as json + md", () => {

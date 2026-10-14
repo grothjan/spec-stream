@@ -34,7 +34,7 @@ reference for agents that read or write the model.
         [scenario-uuid]/
           scenario.json
   milestones/
-    [Milestone]/
+    [milestone-uuid]/
       milestone.json
       description.md
   html-snippets/
@@ -43,10 +43,9 @@ reference for agents that read or write the model.
 ```
 
 **Key facts:**
-- Chapter, slice, lane, element, and scenario directories are named by their UUID. Names and labels live only in the `.json` files.
+- Chapter, slice, lane, element, scenario, and milestone directories are named by their UUID. Names and labels live only in the `.json` files.
 - Slices, lanes, and elements are flat siblings under their chapter — they are **not** nested under each other.
 - Elements reference their lane and slice via `laneId` and `sliceId` in `element.json`.
-- Milestones still use sanitized slug names for their directories.
 - `uuid-index.json` maps every UUID to its directory. Use it to jump from a UUID to the right path without traversing the tree.
 - `index.md` is auto-generated from the board state and overwritten on every sync — do not edit it.
 
@@ -102,6 +101,7 @@ changes are pushed to prooph board workspace.
 | Lane | `chapters/[chapter-uuid]/lanes/[lane-uuid]/` | `chapters/9598a1b8-.../lanes/40e12bb9-.../` |
 | Element | `chapters/[chapter-uuid]/elements/[element-uuid]/` | `chapters/9598a1b8-.../elements/422a7caa-.../` |
 | Scenario | `chapters/[chapter-uuid]/scenarios/[scenario-uuid]/` | `chapters/9598a1b8-.../scenarios/db1b3218-.../` |
+| Milestone | `milestones/[milestone-uuid]/` | `milestones/f47ac10b-58cc-4372-a567-0e02b2c3d479/` |
 
 Generate a fresh UUID v4 for each new entity and use it as both the directory name and the `"id"` in the `.json`.
 

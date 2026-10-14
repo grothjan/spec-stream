@@ -19,7 +19,7 @@
  *       comments/[createdAt]_[id]/{comment.json, comment.md}
  *     scenarios/[scenario-uuid]/
  *       scenario.json
- *   milestones/[milestoneId]_[Milestone]/{milestone.json, description.md}
+ *   milestones/[milestone-uuid]/{milestone.json, description.md}
  *
  * Names/labels live only in the .json files; directory names are UUIDs.
  */
@@ -298,7 +298,7 @@ function renderSharedLaneDetails(tree: DesiredTree, state: ModelState): void {
 // ─────────────────────── milestone ───────────────────────
 
 function renderMilestone(tree: DesiredTree, m: MilestoneState): void {
-  const dir = `milestones/${nameSlug(m.id, m.name)}`;
+  const dir = `milestones/${m.id}`;
   tree.set(
     `${dir}/milestone.json`,
     json({
@@ -376,7 +376,7 @@ function renderUuidIndex(tree: DesiredTree, state: ModelState): void {
   }
 
   for (const milestone of state.milestones.values()) {
-    index[milestone.id] = `milestones/${nameSlug(milestone.id, milestone.name)}`;
+    index[milestone.id] = `milestones/${milestone.id}`;
   }
 
   // Stable output: sort by uuid so diffs are deterministic.

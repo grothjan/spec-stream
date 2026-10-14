@@ -37,7 +37,7 @@ const CHAPTER_DIR  = `chapters/${CHAPTER_ID}`;
 const SLICE_DIR    = `${CHAPTER_DIR}/slices/${SLICE_ID}`;
 const LANE_DIR     = `${CHAPTER_DIR}/lanes/${LANE_ID}`;
 const ELEMENT_DIR  = `${CHAPTER_DIR}/elements/${ELEMENT_ID}`;
-const MILESTONE_DIR = "milestones/My-Milestone";
+const MILESTONE_DIR = `milestones/${MILESTONE_ID}`;
 
 function setupChapter(root: string): void {
   writeJson(root, `${CHAPTER_DIR}/chapter.json`, {
@@ -91,10 +91,6 @@ function updateDiff(entityDir: string, kind: EntityDiff["kind"], id: string, ext
 
 function deleteDiff(entityDir: string, kind: EntityDiff["kind"], id: string): EntityDiff {
   return { status: "delete", entityDir, kind, id };
-}
-
-function renameDiff(entityDir: string, kind: EntityDiff["kind"], id: string, oldEntityDir: string): EntityDiff {
-  return { status: "rename", entityDir, kind, id, oldEntityDir };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -298,17 +294,17 @@ describe("buildOperations", () => {
     expect(ops[0]).toMatchObject({ kind: "milestone.delete", milestoneId: MILESTONE_ID });
   });
 
-  // ─── Rename/move ──────────────────────────────────────────────────────────
-  it("rename diff on element in same lane emits element.rename", async () => {
-    const NEW_ELEMENT_DIR = `${CHAPTER_DIR}/elements/element-uuid-2`;
-    setupLane(root);
-    writeJson(root, `${NEW_ELEMENT_DIR}/element.json`, {
+  // ─── Element rename (via update diff) ────────────────────────────────────
+  it("update diff on element with changed name emits element.rename", async () => {
+    setupElement(root);
+    writeJson(root, `${ELEMENT_DIR}/element.json`, {
       id: ELEMENT_ID, type: "command", name: "New Name", context: "App",
       laneId: LANE_ID, sliceId: SLICE_ID, index: 0,
     });
-    // oldFields: same lane/slice as new — only the name changed
-    const diffs: EntityDiff[] = [renameDiff(NEW_ELEMENT_DIR, "element", ELEMENT_ID, ELEMENT_DIR)];
-    diffs[0].oldFields = { name: "My Element", laneId: LANE_ID, sliceId: SLICE_ID, index: 0 };
+    // oldFields: same lane/slice — only name changed
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldFields: { name: "My Element", laneId: LANE_ID, sliceId: SLICE_ID, index: 0 },
+    })];
     const ops = await buildOperations({ syncRootAbs: root, diffs });
     const renames = ops.filter((o) => o.kind === "element.rename");
     expect(renames).toHaveLength(1);
@@ -322,17 +318,18 @@ describe("buildOperations", () => {
     expect(ops.filter((o) => o.kind === "element.move")).toHaveLength(0);
   });
 
-  it("rename diff on element in different lane emits element.move", async () => {
-    const NEW_ELEMENT_DIR = `${CHAPTER_DIR}/elements/element-uuid-2`;
-    const NEW_LANE_ID     = "lane-uuid-2";
-    setupLane(root);
-    writeJson(root, `${NEW_ELEMENT_DIR}/element.json`, {
+  // ─── Element move (via update diff) ───────────────────────────────────────
+  it("update diff on element with changed laneId emits element.move", async () => {
+    setupElement(root);
+    const NEW_LANE_ID = "lane-uuid-2";
+    writeJson(root, `${ELEMENT_DIR}/element.json`, {
       id: ELEMENT_ID, type: "command", name: "My Element", context: "App",
       laneId: NEW_LANE_ID, sliceId: SLICE_ID, index: 0,
     });
     // oldFields: different laneId — this is a move
-    const diffs: EntityDiff[] = [renameDiff(NEW_ELEMENT_DIR, "element", ELEMENT_ID, ELEMENT_DIR)];
-    diffs[0].oldFields = { name: "My Element", laneId: LANE_ID, sliceId: SLICE_ID, index: 0 };
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldFields: { name: "My Element", laneId: LANE_ID, sliceId: SLICE_ID, index: 0 },
+    })];
     const ops = await buildOperations({ syncRootAbs: root, diffs });
     const moves = ops.filter((o) => o.kind === "element.move");
     expect(moves).toHaveLength(1);

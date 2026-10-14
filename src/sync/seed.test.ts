@@ -90,7 +90,7 @@ describe("seedModelFromData", () => {
     const s = seedModelFromData("ws", "Demo", [chapter()], [milestone()]);
     const tree = render(s);
     expect(tree.has("chapters/c1/chapter.json")).toBe(true);
-    expect(tree.has("milestones/MVP/milestone.json")).toBe(true);
+    expect(tree.has("milestones/m1/milestone.json")).toBe(true);
   });
 
   it("matches a model built by replaying equivalent *-added events (rebuild parity)", () => {

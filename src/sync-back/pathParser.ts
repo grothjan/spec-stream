@@ -17,11 +17,11 @@
  *       element.json, description.md, details.md, play-function.ts, play-type.ts
  *     scenarios/[scenario-uuid]/
  *       scenario.json
- *   milestones/[Milestone]/
+ *   milestones/[milestone-uuid]/
  *     milestone.json, description.md
  *
- * IMPORTANT: Directory names are UUIDs (except milestones which keep slug names).
- * The parser identifies the entity type and the directory containing the .json.
+ * IMPORTANT: All directory names are UUIDs. The parser identifies the entity type
+ * and the directory containing the .json.
  */
 
 export type EntityKind = "chapter" | "slice" | "lane" | "element" | "milestone" | "html-snippet" | "scenario";
@@ -144,7 +144,7 @@ export function parseSyncPath(relPath: string): ParsedPath | null {
 }
 
 function parseMilestonePath(p: string): ParsedPath | null {
-  // milestones/[Milestone name]/...
+  // milestones/[milestone-uuid]/...
   const mMatch = p.match(/^(milestones\/[^/]+)(?:\/(.*))?$/);
   if (!mMatch) return null;
 

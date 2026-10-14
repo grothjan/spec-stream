@@ -5,10 +5,19 @@
  *   1. Walk the model directory on disk to find all current entity directories.
  *   2. Compare against the last-known state in sync-manifest.json (written by sync)
  *      and sync-back-ids.json (written by sync-back after creates).
- *   3. Classify each entity as: create / update / delete / rename-or-move.
+ *   3. Classify each entity as: create / update / delete.
  *
  * This works correctly regardless of whether the model directory is tracked by git,
  * gitignored, or git is not installed at all.
+ *
+ * ## Directory structure
+ *
+ * All entity directories are UUID-keyed. Because a UUID dir is named after the entity
+ * id, the directory path never changes when an entity is renamed or moved — renames
+ * and moves surface purely as content changes inside the primary .json file and are
+ * handled as "update" diffs by operationBuilder.
+ *
+ * The "rename" status is therefore never emitted by this function.
  */
 
 import { readdirSync, readFileSync, existsSync } from "node:fs";
@@ -23,12 +32,12 @@ import {
   type ScenarioExpectationSnapshot,
   type ScenarioInteractionSnapshot,
 } from "./manifest.js";
-import { parseSyncPath, primaryJsonPath } from "./pathParser.js";
+import { parseSyncPath } from "./pathParser.js";
 import type { EntityKind } from "./pathParser.js";
 
 // ─── Output types ─────────────────────────────────────────────────────────────
 
-export type DiffStatus = "create" | "update" | "delete" | "rename";
+export type DiffStatus = "create" | "update" | "delete";
 
 export interface EntityDiff {
   status: DiffStatus;
@@ -39,14 +48,9 @@ export interface EntityDiff {
   /**
    * The entity id.
    * - create: undefined (not yet known)
-   * - update/delete/rename: the existing id from the manifest
+   * - update/delete: the existing id from the manifest
    */
   id?: string;
-  /**
-   * For renames/moves: the old entity directory (from the manifest).
-   * The new location is `entityDir`.
-   */
-  oldEntityDir?: string;
   /**
    * For scenario entities: the previous expectations array from the manifest.
    * Used by operationBuilder to diff and emit set/remove-expectation ops.
@@ -71,18 +75,6 @@ export interface EntityDiff {
   oldContentHashes?: Record<string, string>;
 }
 
-// ─── Primary json filenames by kind ──────────────────────────────────────────
-
-const PRIMARY_JSON_BY_KIND: Partial<Record<EntityKind, string>> = {
-  chapter:      "chapter.json",
-  slice:        "slice.json",
-  lane:         "lane.json",
-  element:      "element.json",
-  milestone:    "milestone.json",
-  "html-snippet": "", // html-snippets use entityDir.json, handled separately
-  scenario:     "scenario.json",
-};
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export interface ManifestDiffOptions {
@@ -97,7 +89,7 @@ export interface ManifestDiffOptions {
  * in both the manifest and on disk (no file content changes) are still returned as
  * "update" — the operationBuilder is responsible for reading the actual files and
  * deciding which specific API calls to make. The diff only determines
- * create / update / delete / rename at the entity-directory level.
+ * create / update / delete at the entity-directory level.
  */
 export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
   const { syncRootAbs } = opts;
@@ -107,13 +99,6 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
   const syncBackIds  = loadManifest(syncBackIdsPath(syncRootAbs));
   const known        = mergeManifests(syncManifest, syncBackIds);
 
-  // Build reverse lookups for rename detection.
-  // id → entityDir from manifest
-  const manifestIdToDir = new Map<string, string>();
-  for (const [dir, entry] of Object.entries(known)) {
-    manifestIdToDir.set(entry.id, dir);
-  }
-
   // Walk disk to find all current entity dirs.
   const diskEntities = walkDiskEntities(syncRootAbs);
 
@@ -121,34 +106,10 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
   const handledManifestDirs = new Set<string>();
 
   for (const { entityDir, kind } of diskEntities) {
-    // Read the id from the on-disk json.
-    const diskId = readEntityId(syncRootAbs, entityDir, kind);
-
     const manifestEntry: ManifestEntry | undefined = known[entityDir];
 
     if (!manifestEntry) {
-      // This dir is not in the manifest at all.
-      if (diskId) {
-        // Has an id on disk — check if the id exists in the manifest under a *different* dir
-        // (rename/move): the entity was renamed locally.
-        const oldDir = manifestIdToDir.get(diskId);
-        if (oldDir && oldDir !== entityDir) {
-          diffs.push({
-            status: "rename",
-            entityDir,
-            kind,
-            id: diskId,
-            oldEntityDir: oldDir,
-            oldExpectations: known[oldDir]?.extra?.expectations,
-            oldInteractions: known[oldDir]?.extra?.interactions,
-            oldFields: known[oldDir]?.fields,
-            oldContentHashes: known[oldDir]?.contentHashes,
-          });
-          handledManifestDirs.add(oldDir);
-          continue;
-        }
-      }
-      // No id on disk, or id not in manifest — genuine create.
+      // Dir not in manifest → genuine create.
       diffs.push({ status: "create", entityDir, kind });
     } else {
       // Dir is in the manifest — only emit an update if content has changed.
@@ -364,34 +325,6 @@ function listFilesUnder(dir: string): string[] {
     }
   }
   return out;
-}
-
-/** Read the id field from the entity's primary json on disk. Returns undefined on any failure. */
-function readEntityId(syncRoot: string, entityDir: string, kind: EntityKind): string | undefined {
-  // Build primary json path using same logic as pathParser.
-  const primaryFile = PRIMARY_JSON_BY_KIND[kind];
-  if (primaryFile === undefined) return undefined;
-
-  // For html-snippets the json is at entityDir + ".json" (e.g. html-snippets/my-slug.json)
-  // but parseSyncPath stores entityDir as "html-snippets/my-slug" (without extension).
-  // primaryJsonPath() in pathParser handles this correctly.
-  const fakeParsed = {
-    kind,
-    entityDir,
-    role: (kind + ".json") as never,
-    generated: false,
-  };
-  const relJsonPath = primaryJsonPath(fakeParsed);
-  const absPath = join(syncRoot, relJsonPath);
-
-  try {
-    if (!existsSync(absPath)) return undefined;
-    const raw = readFileSync(absPath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return typeof parsed.id === "string" && parsed.id ? parsed.id : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Infer entity kind from an entityDir path. Returns null for unrecognised paths. */

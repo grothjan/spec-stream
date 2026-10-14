@@ -295,9 +295,6 @@ async function processDiff(
     case "delete":
       handleDelete(root, diff, ops, seen);
       break;
-    case "rename":
-      handleRename(root, diff, ops, seen);
-      break;
     case "update":
       await handleUpdate(root, diff, ops, seen);
       break;
@@ -354,90 +351,6 @@ function handleDelete(
       break;
     }
   }
-}
-
-function handleRename(
-  root: string,
-  diff: EntityDiff,
-  ops: SyncBackOperation[],
-  seen: Set<string>,
-): void {
-  const { entityDir, kind, id, oldEntityDir } = diff;
-  if (!id || !oldEntityDir) return;
-
-  const key = `rename:${oldEntityDir}→${entityDir}`;
-  if (seen.has(key)) return;
-  seen.add(key);
-
-  // Mark the update key as seen so handleUpdate won't duplicate work on the new dir.
-  seen.add(`update:${entityDir}`);
-
-  switch (kind) {
-    case "chapter": {
-      const data = readJsonFile(root, `${entityDir}/chapter.json`) as ChapterJson | null;
-      if (!data) return;
-      // With UUID-keyed dirs, rename/context changes are detected purely from JSON content.
-      if (data.name) {
-        ops.push({ kind: "chapter.rename", chapterId: id, newName: data.name, entityDir });
-      }
-      if (data.context) {
-        ops.push({ kind: "chapter.update-context", chapterId: id, newContext: data.context, entityDir });
-      }
-      break;
-    }
-    case "slice": {
-      const data = readJsonFile(root, `${entityDir}/slice.json`) as SliceJson | null;
-      const chapterId = resolveChapterId(root, entityDir);
-      if (data?.label && chapterId) {
-        ops.push({ kind: "slice.rename", chapterId, sliceId: id, newLabel: data.label, entityDir });
-      }
-      break;
-    }
-    case "lane": {
-      const data = readJsonFile(root, `${entityDir}/lane.json`) as LaneJson | null;
-      const chapterId = resolveChapterId(root, entityDir);
-      if (data?.label && chapterId) {
-        ops.push({ kind: "lane.rename", chapterId, laneId: id, newLabel: data.label, entityDir });
-      }
-      break;
-    }
-    case "element": {
-      const data = readJsonFile(root, `${entityDir}/element.json`) as ElementJson | null;
-      const chapterId = resolveChapterId(root, entityDir);
-      if (!data || !chapterId) return;
-
-      // With UUID-keyed dirs, detect move vs rename by comparing laneId/sliceId
-      // against oldFields from the manifest (if available).
-      const old = diff.oldFields ?? {};
-      const laneChanged  = data.laneId  !== undefined && old["laneId"]  !== data.laneId;
-      const sliceChanged = data.sliceId !== undefined && old["sliceId"] !== data.sliceId;
-
-      if ((laneChanged || sliceChanged) && data.laneId && data.sliceId) {
-        ops.push({
-          kind: "element.move",
-          chapterId,
-          elementId: id,
-          newLaneId: data.laneId,
-          newSliceId: data.sliceId,
-          newIndex: data.index ?? 0,
-          entityDir,
-        });
-      } else if (data.name) {
-        ops.push({ kind: "element.rename", chapterId, elementId: id, newName: data.name, entityDir });
-      }
-      break;
-    }
-    case "milestone": {
-      const data = readJsonFile(root, `${entityDir}/milestone.json`) as MilestoneJson | null;
-      if (data) {
-        ops.push({ kind: "milestone.update", milestoneId: id, name: data.name, description: data.description, deadline: data.deadline, color: data.color, entityDir });
-      }
-      break;
-    }
-  }
-
-  // Also process content updates for the new location.
-  void handleUpdate(root, { ...diff, status: "update" }, ops, seen);
 }
 
 async function handleUpdate(

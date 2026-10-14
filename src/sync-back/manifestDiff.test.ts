@@ -39,7 +39,7 @@ const CHAPTER_DIR  = `chapters/${CHAPTER_ID}`;
 const SLICE_DIR    = `${CHAPTER_DIR}/slices/${SLICE_ID}`;
 const LANE_DIR     = `${CHAPTER_DIR}/lanes/${LANE_ID}`;
 const ELEMENT_DIR  = `${CHAPTER_DIR}/elements/${ELEMENT_ID}`;
-const MILESTONE_DIR = "milestones/My-Milestone";
+const MILESTONE_DIR = `milestones/${MILESTONE_ID}`;
 
 function writeFullModel(root: string): void {
   writeJson(root, `${CHAPTER_DIR}/chapter.json`,   { id: CHAPTER_ID,  name: "My Chapter",  context: "App" });
@@ -101,37 +101,20 @@ describe("computeManifestDiff", () => {
     });
   });
 
-  it("detects rename when same id appears under a different dir", () => {
-    // On disk: element exists under NEW_DIR (id = ELEMENT_ID)
-    // Manifest: element was under OLD_DIR (same id)
-    const OLD_DIR = `${CHAPTER_DIR}/elements/old-element-uuid`;
-    const NEW_DIR = `${CHAPTER_DIR}/elements/new-element-uuid`;
-
-    writeJson(root, `${CHAPTER_DIR}/chapter.json`,   { id: CHAPTER_ID,  name: "My Chapter", context: "App" });
-    writeJson(root, `${SLICE_DIR}/slice.json`,        { id: SLICE_ID,    label: "My Slice" });
-    writeJson(root, `${LANE_DIR}/lane.json`,          { id: LANE_ID,     label: "My Lane", type: "information-flow" });
-    writeJson(root, `${NEW_DIR}/element.json`,        { id: ELEMENT_ID,  name: "New Name", type: "command", laneId: LANE_ID, sliceId: SLICE_ID });
-
+  it("never emits rename — all entity dirs are UUID-keyed", () => {
+    // All directories are now UUID-keyed (including milestones). Directory paths never
+    // change, so renames/moves always surface as content changes ("update" diffs).
+    writeFullModel(root);
     writeManifest(root, {
-      [CHAPTER_DIR]: { id: CHAPTER_ID },
-      [SLICE_DIR]:   { id: SLICE_ID },
-      [LANE_DIR]:    { id: LANE_ID },
-      [OLD_DIR]:     { id: ELEMENT_ID },   // old location in manifest
+      [CHAPTER_DIR]:   { id: CHAPTER_ID },
+      [SLICE_DIR]:     { id: SLICE_ID },
+      [LANE_DIR]:      { id: LANE_ID },
+      [ELEMENT_DIR]:   { id: ELEMENT_ID },
+      [MILESTONE_DIR]: { id: MILESTONE_ID },
     });
 
     const diffs = computeManifestDiff({ syncRootAbs: root });
-    const renames = diffs.filter((d) => d.status === "rename");
-    expect(renames).toHaveLength(1);
-    expect(renames[0]).toMatchObject({
-      status: "rename",
-      entityDir: NEW_DIR,
-      kind: "element",
-      id: ELEMENT_ID,
-      oldEntityDir: OLD_DIR,
-    });
-    // OLD_DIR should not also appear as a delete
-    const deletes = diffs.filter((d) => d.status === "delete");
-    expect(deletes.some((d) => d.entityDir === OLD_DIR)).toBe(false);
+    expect(diffs.filter((d) => d.status === "rename")).toHaveLength(0);
   });
 
   it("treats entity with id already in sync-back-ids as update not create", () => {
