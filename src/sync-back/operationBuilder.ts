@@ -376,15 +376,12 @@ function handleRename(
     case "chapter": {
       const data = readJsonFile(root, `${entityDir}/chapter.json`) as ChapterJson | null;
       if (!data) return;
-      const oldCtx = extractContextFromChapterDir(oldEntityDir);
-      const newCtx = extractContextFromChapterDir(entityDir);
-      if (oldCtx !== newCtx && newCtx) {
-        ops.push({ kind: "chapter.update-context", chapterId: id, newContext: data.context ?? newCtx, entityDir });
-      }
-      const oldNameSeg = oldEntityDir.split("/").pop();
-      const newNameSeg = entityDir.split("/").pop();
-      if (oldNameSeg !== newNameSeg && data.name) {
+      // With UUID-keyed dirs, rename/context changes are detected purely from JSON content.
+      if (data.name) {
         ops.push({ kind: "chapter.rename", chapterId: id, newName: data.name, entityDir });
+      }
+      if (data.context) {
+        ops.push({ kind: "chapter.update-context", chapterId: id, newContext: data.context, entityDir });
       }
       break;
     }
@@ -409,22 +406,22 @@ function handleRename(
       const chapterId = resolveChapterId(root, entityDir);
       if (!data || !chapterId) return;
 
-      const oldSliceLanePath = extractSliceLanePath(oldEntityDir);
-      const newSliceLanePath = extractSliceLanePath(entityDir);
+      // With UUID-keyed dirs, detect move vs rename by comparing laneId/sliceId
+      // against oldFields from the manifest (if available).
+      const old = diff.oldFields ?? {};
+      const laneChanged  = data.laneId  !== undefined && old["laneId"]  !== data.laneId;
+      const sliceChanged = data.sliceId !== undefined && old["sliceId"] !== data.sliceId;
 
-      if (oldSliceLanePath !== newSliceLanePath) {
-        // Move (parent slice/lane changed).
-        if (data.laneId && data.sliceId) {
-          ops.push({
-            kind: "element.move",
-            chapterId,
-            elementId: id,
-            newLaneId: data.laneId,
-            newSliceId: data.sliceId,
-            newIndex: data.index ?? 0,
-            entityDir,
-          });
-        }
+      if ((laneChanged || sliceChanged) && data.laneId && data.sliceId) {
+        ops.push({
+          kind: "element.move",
+          chapterId,
+          elementId: id,
+          newLaneId: data.laneId,
+          newSliceId: data.sliceId,
+          newIndex: data.index ?? 0,
+          entityDir,
+        });
       } else if (data.name) {
         ops.push({ kind: "element.rename", chapterId, elementId: id, newName: data.name, entityDir });
       }
@@ -824,33 +821,19 @@ function stripPlayTypeWrapper(content: string): string {
  * chapter.json.
  *
  * entityDir is like:
- *   chapters/App/MyChapter/slices/0001_Foo/lanes/information-flow/Bar/elements/0001_Baz
+ *   chapters/[chapter-uuid]/slices/[slice-uuid]
+ *   chapters/[chapter-uuid]/lanes/[lane-uuid]
+ *   chapters/[chapter-uuid]/elements/[element-uuid]
  *
- * We find the `chapters/[Context]/[Name]` prefix and read its chapter.json.
+ * We find the `chapters/[uuid]` prefix and read its chapter.json.
  */
 export function resolveChapterId(root: string, entityDir: string): string | null {
-  // Match chapters/[Context]/[Chapter name]
-  const m = entityDir.match(/^(chapters\/[^/]+\/[^/]+)/);
+  // Match chapters/[uuid]
+  const m = entityDir.match(/^(chapters\/[^/]+)/);
   if (!m) return null;
   const chapterDir = m[1];
   const chapterJson = readJsonFile(root, `${chapterDir}/chapter.json`) as ChapterJson | null;
   return chapterJson?.id ?? null;
-}
-
-/** Extract the Context segment from a chapter dir like `chapters/App/MyChapter`. */
-function extractContextFromChapterDir(chapterDir: string): string | null {
-  const m = chapterDir.match(/^chapters\/([^/]+)\/[^/]+$/);
-  return m?.[1] ?? null;
-}
-
-/**
- * Extract the slice+lane path from an element dir, to detect moves vs renames.
- * e.g. `chapters/App/Ch/slices/0001_Foo/lanes/information-flow/Bar` from
- * `chapters/App/Ch/slices/0001_Foo/lanes/information-flow/Bar/elements/0001_El`
- */
-function extractSliceLanePath(elementDir: string): string {
-  const m = elementDir.match(/^(.+)\/elements\/[^/]+$/);
-  return m?.[1] ?? elementDir;
 }
 
 /**

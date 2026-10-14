@@ -1,19 +1,19 @@
 /**
  * Load a Chapter from the local-sync file tree.
  *
- * The on-disk layout is slice-first (see docs/local-sync.md):
+ * The on-disk layout is flat UUID-keyed under the chapter directory:
  *
- *   chapters/[Ctx]/[id]_[Name]/
+ *   chapters/[chapter-uuid]/
  *     chapter.json
- *     slices/[index]_[id]_[Label]/
+ *     slices/[slice-uuid]/
  *       slice.json
- *       lanes/[laneType]/[id]_[Lane]/
- *         lane.json
- *         elements/[index]_[id]_[Element]/
- *           element.json
- *           play-function.ts   (optional)
- *           play-type.ts       (optional — stored as "type Payload = <expr>")
- *     scenarios/[id]_[Name]/
+ *     lanes/[lane-uuid]/
+ *       lane.json
+ *     elements/[element-uuid]/
+ *       element.json
+ *       play-function.ts   (optional)
+ *       play-type.ts       (optional — stored as "type Payload = <expr>")
+ *     scenarios/[scenario-uuid]/
  *       scenario.json
  *
  * uuid-index.json at the model root maps any UUID to its relative directory path.
@@ -58,8 +58,8 @@ export async function loadChapterFromDisk(chapterDir: string): Promise<Chapter> 
   );
   slices.sort((a, b) => a.index - b.index);
 
-  // 3 ── lanes (de-duplicated by id — each lane appears once per slice on disk)
-  const laneJsonPaths = await globby("slices/*/lanes/*/*/lane.json", dir);
+  // 3 ── lanes (flat under chapter/lanes/)
+  const laneJsonPaths = await globby("lanes/*/lane.json", dir);
   const laneMap = new Map<string, Lane>();
   for (const p of laneJsonPaths) {
     const l = await readJson<LaneJson>(p);
@@ -76,16 +76,10 @@ export async function loadChapterFromDisk(chapterDir: string): Promise<Chapter> 
   }
   const lanes: Lane[] = [...laneMap.values()].sort((a, b) => a.index - b.index);
 
-  // 4 ── elements (one per element.json)
+  // 4 ── elements (flat under chapter/elements/)
   // Sort by slice index first (timeline order), then by element index within the cell.
-  // This ensures that when multiple information elements share the same context.name key,
-  // the one from the latest slice on the timeline appears last — which matters for read
-  // view deduplication in the output.
   const sliceIndexById = new Map(slices.map((s) => [s.id, s.index]));
-  const elementJsonPaths = await globby(
-    "slices/*/lanes/*/*/elements/*/element.json",
-    dir,
-  );
+  const elementJsonPaths = await globby("elements/*/element.json", dir);
   const elements: Element[] = await Promise.all(
     elementJsonPaths.map((p) => loadElement(p)),
   );

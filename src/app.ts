@@ -40,6 +40,11 @@ export interface AppOptions {
    * to disable throttling). Defaults to 600 ms between requests.
    */
   rateLimiter?: RateLimiter | RateLimiterOptions;
+  /**
+   * Reorder-buffer window in ms. Pass `0` in tests to flush events synchronously.
+   * Defaults to 80 ms in production.
+   */
+  reorderWindowMs?: number;
 }
 
 export class App {
@@ -54,6 +59,7 @@ export class App {
   private readonly createSupabase: (url: string, anonKey: string) => SupabaseLike;
   private readonly writeOutput: ((stream: "stdout" | "stderr", text: string) => void) | null;
   private readonly rateLimiter: RateLimiter | RateLimiterOptions | undefined;
+  private readonly reorderWindowMs: number | undefined;
 
   private realtime?: RealtimeClient;
   private token?: RealtimeToken;
@@ -90,6 +96,7 @@ export class App {
           }
         : opts.writeOutput;
     this.rateLimiter = opts.rateLimiter;
+    this.reorderWindowMs = opts.reorderWindowMs;
     this.router = Router.fromConfig(this.config);
     this.scheduler = new Scheduler({
       maxConcurrent: this.config.maxConcurrent,
@@ -427,7 +434,7 @@ export class App {
     // the same DB transaction (e.g. element-added + element-config-synced) are sorted
     // by createdAt before the projection and router see them. Without this, the sync
     // event can arrive before element-added and silently no-op in the reducer.
-    this.reorderBuffer = new ReorderBuffer({ onEvent: (e) => this.onEvent(e) });
+    this.reorderBuffer = new ReorderBuffer({ onEvent: (e) => this.onEvent(e), windowMs: this.reorderWindowMs });
 
     this.realtime = new RealtimeClient({
       supabaseUrl: this.token.supabaseUrl,

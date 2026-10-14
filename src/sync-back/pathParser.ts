@@ -7,19 +7,21 @@
  *
  * The local model file layout is:
  *
- *   chapters/[Context]/[Chapter]/
+ *   chapters/[chapter-uuid]/
  *     chapter.json, index.md
- *     slices/[index]_[Slice]/
+ *     slices/[slice-uuid]/
  *       slice.json, details.md
- *       lanes/[laneType]/[Lane]/
- *         lane.json
- *         elements/[index]_[Element]/
- *           element.json, description.md, details.md, play-function.ts, play-type.ts
+ *     lanes/[lane-uuid]/
+ *       lane.json
+ *     elements/[element-uuid]/
+ *       element.json, description.md, details.md, play-function.ts, play-type.ts
+ *     scenarios/[scenario-uuid]/
+ *       scenario.json
  *   milestones/[Milestone]/
  *     milestone.json, description.md
  *
- * IMPORTANT: UUIDs are NOT in paths. They live in the .json files.
- * The parser just identifies the entity type and the directory containing the .json.
+ * IMPORTANT: Directory names are UUIDs (except milestones which keep slug names).
+ * The parser identifies the entity type and the directory containing the .json.
  */
 
 export type EntityKind = "chapter" | "slice" | "lane" | "element" | "milestone" | "html-snippet" | "scenario";
@@ -56,9 +58,8 @@ export interface ParsedPath {
  * Parse a relative file path (forward-slash, relative to the sync root) into a
  * structured descriptor.
  *
- * Returns `null` for paths that are not part of the managed model tree (uuid-index.json,
- * workspace.json, sync-state.json, comment files, scenario files, lane-details, etc.) or
- * that are not supported for sync-back.
+ * Returns `null` for paths that are not part of the managed model tree or that
+ * are not supported for sync-back.
  */
 export function parseSyncPath(relPath: string): ParsedPath | null {
   // Normalize to forward-slash.
@@ -75,18 +76,17 @@ export function parseSyncPath(relPath: string): ParsedPath | null {
   }
 
   // ─── chapter tree ────────────────────────────────────────────────────────────
-  // chapters/[Context]/[Chapter name]/...
-  const chapterBase = p.match(/^(chapters\/[^/]+\/[^/]+)(?:\/(.*))?$/);
+  // chapters/[chapter-uuid]/...
+  const chapterBase = p.match(/^(chapters\/[^/]+)(?:\/(.*))?$/);
   if (!chapterBase) {
-    // not a chapter path — could be milestones, workspace.json, uuid-index.json, etc.
     return parseMilestonePath(p);
   }
 
   const [, chapterDir, rest] = chapterBase;
 
-  if (!rest) return null; // just the chapter directory itself
+  if (!rest) return null; // bare chapter directory
 
-  // chapter.json / index.md (direct chapter files)
+  // chapter.json / index.md
   if (rest === "chapter.json") {
     return { kind: "chapter", entityDir: chapterDir, role: "chapter.json", generated: false };
   }
@@ -94,70 +94,53 @@ export function parseSyncPath(relPath: string): ParsedPath | null {
     return { kind: "chapter", entityDir: chapterDir, role: "index.md", generated: true };
   }
 
-  // Scenarios — scenario.json is synced back (expectations); other scenario files skipped
-  if (rest.startsWith("scenarios/")) {
-    const scenarioMatch = rest.match(/^(scenarios\/[^/]+)\/(scenario\.json)$/);
-    if (!scenarioMatch) return null; // not scenario.json
+  // slices/[slice-uuid]/...
+  const sliceMatch = rest.match(/^(slices\/[^/]+)(?:\/(.*))?$/);
+  if (sliceMatch) {
+    const [, sliceSeg, sliceFile] = sliceMatch;
+    const sliceDir = `${chapterDir}/${sliceSeg}`;
+    if (!sliceFile) return null;
+    if (sliceFile === "slice.json")  return { kind: "slice", entityDir: sliceDir, role: "slice.json",   generated: false };
+    if (sliceFile === "details.md")  return { kind: "slice", entityDir: sliceDir, role: "slice.details", generated: false };
+    if (sliceFile.startsWith("comments/")) return null;
+    return null;
+  }
+
+  // lanes/[lane-uuid]/lane.json
+  const laneMatch = rest.match(/^(lanes\/[^/]+)(?:\/(.*))?$/);
+  if (laneMatch) {
+    const [, laneSeg, laneFile] = laneMatch;
+    const laneDir = `${chapterDir}/${laneSeg}`;
+    if (!laneFile) return null;
+    if (laneFile === "lane.json") return { kind: "lane", entityDir: laneDir, role: "lane.json", generated: false };
+    return null;
+  }
+
+  // elements/[element-uuid]/...
+  const elemMatch = rest.match(/^(elements\/[^/]+)(?:\/(.*))?$/);
+  if (elemMatch) {
+    const [, elemSeg, elemFile] = elemMatch;
+    const elemDir = `${chapterDir}/${elemSeg}`;
+    if (!elemFile) return null;
+    switch (elemFile) {
+      case "element.json":    return { kind: "element", entityDir: elemDir, role: "element.json",          generated: false };
+      case "description.md":  return { kind: "element", entityDir: elemDir, role: "element.description",   generated: false };
+      case "details.md":      return { kind: "element", entityDir: elemDir, role: "element.details",       generated: false };
+      case "play-function.ts":return { kind: "element", entityDir: elemDir, role: "element.play-function", generated: false };
+      case "play-type.ts":    return { kind: "element", entityDir: elemDir, role: "element.play-type",     generated: false };
+      default: return null;
+    }
+  }
+
+  // scenarios/[scenario-uuid]/scenario.json
+  const scenarioMatch = rest.match(/^(scenarios\/[^/]+)\/(scenario\.json)$/);
+  if (scenarioMatch) {
     const [, scenarioSeg] = scenarioMatch;
     const scenarioDir = `${chapterDir}/${scenarioSeg}`;
     return { kind: "scenario", entityDir: scenarioDir, role: "scenario.json", generated: false };
   }
 
-  // slices/[index]_[Slice label]/...
-  const sliceMatch = rest.match(/^(slices\/[^/]+)(?:\/(.*))?$/);
-  if (!sliceMatch) return null;
-
-  const [, sliceSeg, sliceRest] = sliceMatch;
-  const sliceDir = `${chapterDir}/${sliceSeg}`;
-
-  if (!sliceRest) return null;
-
-  if (sliceRest === "slice.json") {
-    return { kind: "slice", entityDir: sliceDir, role: "slice.json", generated: false };
-  }
-  if (sliceRest === "details.md") {
-    return { kind: "slice", entityDir: sliceDir, role: "slice.details", generated: false };
-  }
-  // comments, index.md within slice — skip
-  if (sliceRest.startsWith("comments/")) return null;
-
-  // lanes/[laneType]/[Lane label]/...
-  const laneMatch = sliceRest.match(/^(lanes\/[^/]+\/[^/]+)(?:\/(.*))?$/);
-  if (!laneMatch) return null;
-
-  const [, laneSeg, laneRest] = laneMatch;
-  const laneDir = `${sliceDir}/${laneSeg}`;
-
-  if (!laneRest) return null;
-
-  if (laneRest === "lane.json") {
-    return { kind: "lane", entityDir: laneDir, role: "lane.json", generated: false };
-  }
-
-  // elements/[index]_[Element name]/...
-  const elemMatch = laneRest.match(/^(elements\/[^/]+)(?:\/(.*))?$/);
-  if (!elemMatch) return null;
-
-  const [, elemSeg, elemRest] = elemMatch;
-  const elemDir = `${laneDir}/${elemSeg}`;
-
-  if (!elemRest) return null;
-
-  switch (elemRest) {
-    case "element.json":
-      return { kind: "element", entityDir: elemDir, role: "element.json", generated: false };
-    case "description.md":
-      return { kind: "element", entityDir: elemDir, role: "element.description", generated: false };
-    case "details.md":
-      return { kind: "element", entityDir: elemDir, role: "element.details", generated: false };
-    case "play-function.ts":
-      return { kind: "element", entityDir: elemDir, role: "element.play-function", generated: false };
-    case "play-type.ts":
-      return { kind: "element", entityDir: elemDir, role: "element.play-type", generated: false };
-    default:
-      // comments or anything else under an element
-      return null;
-  }
+  return null;
 }
 
 function parseMilestonePath(p: string): ParsedPath | null {

@@ -8,19 +8,20 @@
  * Layout (see docs/local-sync.md), slice-first:
  *
  *   workspace.json
- *   chapters/[Context]/[chapterId]_[Chapter]/
+ *   chapters/[chapter-uuid]/
  *     chapter.json, index.md
- *     slices/[index]_[sliceId]_[Slice]/
+ *     slices/[slice-uuid]/
  *       slice.json, details.md, comments/[createdAt]_[id]/{comment.json, comment.md}
- *       lanes/[laneType]/[laneId]_[Lane]/
- *         lane.json
- *         elements/[index]_[elementId]_[Element]/
- *           element.json, description.md, details.md,
- *           comments/[createdAt]_[id]/{comment.json, comment.md}
- *   lane-details/[LaneType]/[Lane]/details.md
+ *     lanes/[lane-uuid]/
+ *       lane.json
+ *     elements/[element-uuid]/
+ *       element.json, description.md, details.md,
+ *       comments/[createdAt]_[id]/{comment.json, comment.md}
+ *     scenarios/[scenario-uuid]/
+ *       scenario.json
  *   milestones/[milestoneId]_[Milestone]/{milestone.json, description.md}
  *
- * All name/label path segments are sanitized; raw values live in the `.json`.
+ * Names/labels live only in the .json files; directory names are UUIDs.
  */
 
 import {
@@ -38,7 +39,7 @@ import {
   lanesOfChapter,
   elementsInCell,
 } from "./model.js";
-import { sanitizeSegment, nameSlug, orderedSegment } from "./sanitize.js";
+import { sanitizeSegment, nameSlug } from "./sanitize.js";
 
 /** A desired file tree: relative POSIX path -> UTF-8 content. */
 export type DesiredTree = Map<string, string>;
@@ -81,27 +82,16 @@ export function render(state: ModelState): DesiredTree {
 // ─────────────────────── path builders ───────────────────────
 
 function chapterDir(chapter: ChapterState): string {
-  const ctx = sanitizeSegment(chapter.context, "no-context");
-  return `chapters/${ctx}/${nameSlug(chapter.id, chapter.name)}`;
+  return `chapters/${chapter.id}`;
 }
 function sliceDir(chapter: ChapterState, slice: SliceState): string {
-  return `${chapterDir(chapter)}/slices/${orderedSegment(slice.index, slice.id, slice.label)}`;
+  return `${chapterDir(chapter)}/slices/${slice.id}`;
 }
-function laneDirUnderSlice(
-  chapter: ChapterState,
-  slice: SliceState,
-  lane: LaneState,
-): string {
-  const laneType = sanitizeSegment(lane.type, "lane");
-  return `${sliceDir(chapter, slice)}/lanes/${laneType}/${nameSlug(lane.id, lane.label)}`;
+function laneDir(chapter: ChapterState, lane: LaneState): string {
+  return `${chapterDir(chapter)}/lanes/${lane.id}`;
 }
-function elementDir(
-  chapter: ChapterState,
-  slice: SliceState,
-  lane: LaneState,
-  el: ElementState,
-): string {
-  return `${laneDirUnderSlice(chapter, slice, lane)}/elements/${orderedSegment(el.index, el.id, el.name)}`;
+function elementDir(chapter: ChapterState, el: ElementState): string {
+  return `${chapterDir(chapter)}/elements/${el.id}`;
 }
 
 // ─────────────────────── chapter ───────────────────────
@@ -124,8 +114,23 @@ function renderChapter(tree: DesiredTree, state: ModelState, chapter: ChapterSta
 
   const slices = slicesOfChapter(state, chapter.id);
   const lanes = lanesOfChapter(state, chapter.id);
+
   for (const slice of slices) {
-    renderSlice(tree, state, chapter, slice, lanes);
+    renderSlice(tree, state, chapter, slice);
+  }
+
+  // Lanes rendered once at chapter level — no longer nested under each slice.
+  for (const lane of lanes) {
+    renderLane(tree, chapter, lane);
+  }
+
+  // Elements rendered flat at chapter level.
+  for (const lane of lanes) {
+    for (const slice of slices) {
+      for (const el of elementsInCell(state, lane.id, slice.id)) {
+        renderElement(tree, chapter, el);
+      }
+    }
   }
 
   // Render scenarios for this chapter.
@@ -157,10 +162,9 @@ function renderChapterIndex(state: ModelState, chapter: ChapterState): string {
 
 function renderSlice(
   tree: DesiredTree,
-  state: ModelState,
+  _state: ModelState,
   chapter: ChapterState,
   slice: SliceState,
-  lanes: LaneState[],
 ): void {
   const dir = sliceDir(chapter, slice);
   tree.set(
@@ -181,25 +185,16 @@ function renderSlice(
   );
   tree.set(`${dir}/details.md`, markdown(slice.details));
   renderComments(tree, `${dir}/comments`, slice.comments);
-
-  // Lanes are always rendered per slice (slice-first) so that agents can discover the
-  // lane's id and directory even before any elements have been placed in it.
-  for (const lane of lanes) {
-    const cell = elementsInCell(state, lane.id, slice.id);
-    renderLane(tree, chapter, slice, lane, cell);
-  }
 }
 
-// ─────────────────────── lane (per slice) ───────────────────────
+// ─────────────────────── lane (once per chapter) ───────────────────────
 
 function renderLane(
   tree: DesiredTree,
   chapter: ChapterState,
-  slice: SliceState,
   lane: LaneState,
-  cell: ElementState[],
 ): void {
-  const dir = laneDirUnderSlice(chapter, slice, lane);
+  const dir = laneDir(chapter, lane);
   tree.set(
     `${dir}/lane.json`,
     json({
@@ -211,9 +206,6 @@ function renderLane(
       icon: lane.icon,
     }),
   );
-  for (const el of cell) {
-    renderElement(tree, chapter, slice, lane, el);
-  }
 }
 
 // ─────────────────────── element ───────────────────────
@@ -221,11 +213,9 @@ function renderLane(
 function renderElement(
   tree: DesiredTree,
   chapter: ChapterState,
-  slice: SliceState,
-  lane: LaneState,
   el: ElementState,
 ): void {
-  const dir = elementDir(chapter, slice, lane, el);
+  const dir = elementDir(chapter, el);
   tree.set(
     `${dir}/element.json`,
     json({
@@ -275,7 +265,7 @@ function renderScenario(
   chapter: ChapterState,
   sc: ScenarioState,
 ): void {
-  const dir = `${chapterDir(chapter)}/scenarios/${nameSlug(sc.id, sc.name)}`;
+  const dir = `${chapterDir(chapter)}/scenarios/${sc.id}`;
   tree.set(
     `${dir}/scenario.json`,
     json({
@@ -366,24 +356,21 @@ function renderUuidIndex(tree: DesiredTree, state: ModelState): void {
     const lanes = lanesOfChapter(state, chapter.id);
 
     for (const slice of slices) {
-      const sDir = sliceDir(chapter, slice);
-      index[slice.id] = sDir;
+      index[slice.id] = sliceDir(chapter, slice);
+    }
 
-      for (const lane of lanes) {
-        const cell = elementsInCell(state, lane.id, slice.id);
-        const lDir = laneDirUnderSlice(chapter, slice, lane);
-        // Lane id may appear multiple times (once per slice); last write wins but all
-        // point to a valid directory — agents typically only need one path per lane.
-        index[lane.id] = lDir;
-        for (const el of cell) {
-          index[el.id] = elementDir(chapter, slice, lane, el);
+    for (const lane of lanes) {
+      index[lane.id] = laneDir(chapter, lane);
+      for (const slice of slices) {
+        for (const el of elementsInCell(state, lane.id, slice.id)) {
+          index[el.id] = elementDir(chapter, el);
         }
       }
     }
 
     for (const scenario of state.scenarios.values()) {
       if (scenario.chapterId === chapter.id) {
-        index[scenario.id] = `${cDir}/scenarios/${nameSlug(scenario.id, scenario.name)}`;
+        index[scenario.id] = `${cDir}/scenarios/${scenario.id}`;
       }
     }
   }

@@ -97,7 +97,7 @@ describe("Projection seeding", () => {
     const { proj } = make();
     const result = await proj.seed();
     expect(result.created).toBeGreaterThan(0);
-    expect(existsSync(join(dir, "chapters/Ordering/Checkout/chapter.json"))).toBe(true);
+    expect(existsSync(join(dir, "chapters/c1/chapter.json"))).toBe(true);
     expect(existsSync(join(dir, "sync-state.json"))).toBe(true);
     expect(proj.isSeeded).toBe(true);
   });
@@ -114,9 +114,10 @@ describe("Projection debounced writes", () => {
     expect(timers.pending()).toBe(true); // one write scheduled, not three
 
     timers.tick(); // single flush
-    // final label wins; slice dir reflects "Final"
-    expect(existsSync(join(dir, "chapters/Ordering/Checkout/slices/0000_Final/slice.json"))).toBe(true);
-    expect(existsSync(join(dir, "chapters/Ordering/Checkout/slices/0000_Place-Order"))).toBe(false);
+    // final label wins in slice.json; the UUID dir is stable
+    const sliceJson = join(dir, "chapters/c1/slices/s1/slice.json");
+    expect(existsSync(sliceJson)).toBe(true);
+    expect(JSON.parse(readFileSync(sliceJson, "utf8")).label).toBe("Final");
   });
 
   it("advances the cursor only after a successful write pass", async () => {
@@ -139,7 +140,7 @@ describe("Projection debounced writes", () => {
     await proj.seed();
     proj.handle(ev("slice-status-changed", { sliceId: "s1", id: "x", data: { newValue: { status: "ready" } } }));
     proj.flushNow();
-    const sliceJson = readFileSync(join(dir, "chapters/Ordering/Checkout/slices/0000_Place-Order/slice.json"), "utf8");
+    const sliceJson = readFileSync(join(dir, "chapters/c1/slices/s1/slice.json"), "utf8");
     expect(JSON.parse(sliceJson).status).toBe("ready");
   });
 });

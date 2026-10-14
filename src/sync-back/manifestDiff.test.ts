@@ -29,17 +29,17 @@ function writeManifest(root: string, entities: Record<string, { id: string; hash
   saveManifest(syncManifestPath(root), manifest);
 }
 
-const CHAPTER_DIR  = "chapters/App/My-Chapter";
-const SLICE_DIR    = `${CHAPTER_DIR}/slices/0001_My-Slice`;
-const LANE_DIR     = `${SLICE_DIR}/lanes/information-flow/My-Lane`;
-const ELEMENT_DIR  = `${LANE_DIR}/elements/0001_My-Element`;
-const MILESTONE_DIR = "milestones/My-Milestone";
-
 const CHAPTER_ID  = "chapter-uuid-1";
 const SLICE_ID    = "slice-uuid-1";
 const LANE_ID     = "lane-uuid-1";
 const ELEMENT_ID  = "element-uuid-1";
 const MILESTONE_ID = "milestone-uuid-1";
+
+const CHAPTER_DIR  = `chapters/${CHAPTER_ID}`;
+const SLICE_DIR    = `${CHAPTER_DIR}/slices/${SLICE_ID}`;
+const LANE_DIR     = `${CHAPTER_DIR}/lanes/${LANE_ID}`;
+const ELEMENT_DIR  = `${CHAPTER_DIR}/elements/${ELEMENT_ID}`;
+const MILESTONE_DIR = "milestones/My-Milestone";
 
 function writeFullModel(root: string): void {
   writeJson(root, `${CHAPTER_DIR}/chapter.json`,   { id: CHAPTER_ID,  name: "My Chapter",  context: "App" });
@@ -89,7 +89,7 @@ describe("computeManifestDiff", () => {
       [ELEMENT_DIR]:   { id: ELEMENT_ID },
       [MILESTONE_DIR]: { id: MILESTONE_ID },
       // Extra entry in manifest that has no corresponding dir on disk:
-      "chapters/App/My-Chapter/slices/0001_My-Slice/lanes/information-flow/My-Lane/elements/0002_Old-Element": { id: "old-element-uuid" },
+      [`${CHAPTER_DIR}/elements/old-element-uuid`]: { id: "old-element-uuid" },
     });
     const diffs = computeManifestDiff({ syncRootAbs: root });
     const deletes = diffs.filter((d) => d.status === "delete");
@@ -104,8 +104,8 @@ describe("computeManifestDiff", () => {
   it("detects rename when same id appears under a different dir", () => {
     // On disk: element exists under NEW_DIR (id = ELEMENT_ID)
     // Manifest: element was under OLD_DIR (same id)
-    const OLD_DIR = `${LANE_DIR}/elements/0001_Old-Name`;
-    const NEW_DIR = `${LANE_DIR}/elements/0001_New-Name`;
+    const OLD_DIR = `${CHAPTER_DIR}/elements/old-element-uuid`;
+    const NEW_DIR = `${CHAPTER_DIR}/elements/new-element-uuid`;
 
     writeJson(root, `${CHAPTER_DIR}/chapter.json`,   { id: CHAPTER_ID,  name: "My Chapter", context: "App" });
     writeJson(root, `${SLICE_DIR}/slice.json`,        { id: SLICE_ID,    label: "My Slice" });
@@ -204,8 +204,8 @@ describe("computeManifestDiff", () => {
     //    directory to NEW_DIR, and updates sync-manifest.json to use NEW_DIR as key.
     // 4. sync-back run #2 should NOT emit a delete for OLD_DIR.
 
-    const OLD_ELEMENT_DIR = `${LANE_DIR}/elements/0001_Lead-Created`;
-    const NEW_ELEMENT_DIR = `${LANE_DIR}/elements/0001_Lead-Registered`;
+    const OLD_ELEMENT_DIR = `${CHAPTER_DIR}/elements/old-lead-created-uuid`;
+    const NEW_ELEMENT_DIR = `${CHAPTER_DIR}/elements/new-lead-registered-uuid`;
 
     // State after step 3: disk has NEW_DIR, sync-manifest has NEW_DIR.
     writeJson(root, `${CHAPTER_DIR}/chapter.json`,     { id: CHAPTER_ID, name: "My Chapter", context: "App" });

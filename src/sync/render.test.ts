@@ -30,6 +30,12 @@ function model(): ModelState {
   return s;
 }
 
+// New UUID-based paths
+const CHAPTER_DIR = "chapters/c1";
+const SLICE_DIR   = `${CHAPTER_DIR}/slices/s1`;
+const LANE_DIR    = `${CHAPTER_DIR}/lanes/l1`;
+const ELEMENT_DIR = `${CHAPTER_DIR}/elements/el1`;
+
 describe("render layout", () => {
   it("writes workspace.json", () => {
     const t = render(model());
@@ -37,40 +43,35 @@ describe("render layout", () => {
     expect(JSON.parse(t.get("workspace.json")!).name).toBe("Demo Workspace");
   });
 
-  it("places chapter under context with slug-only dir (no UUID)", () => {
+  it("places chapter under chapters/[uuid]/ (UUID-keyed, no context/slug prefix)", () => {
     const t = render(model());
-    expect(t.has("chapters/Ordering/Checkout/chapter.json")).toBe(true);
-    expect(t.has("chapters/Ordering/Checkout/index.md")).toBe(true);
+    expect(t.has(`${CHAPTER_DIR}/chapter.json`)).toBe(true);
+    expect(t.has(`${CHAPTER_DIR}/index.md`)).toBe(true);
   });
 
-  it("nests slice with ordered prefix (no UUID)", () => {
+  it("places slice flat under chapters/[uuid]/slices/[uuid]/", () => {
     const t = render(model());
-    expect(t.has("chapters/Ordering/Checkout/slices/0000_Place-Order/slice.json")).toBe(true);
+    expect(t.has(`${SLICE_DIR}/slice.json`)).toBe(true);
   });
 
-  it("nests lane under slice and element under lane (slice-first)", () => {
+  it("places lane flat under chapters/[uuid]/lanes/[uuid]/ and element under chapters/[uuid]/elements/[uuid]/", () => {
     const t = render(model());
-    const base =
-      "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer";
-    expect(t.has(`${base}/lane.json`)).toBe(true);
-    expect(t.has(`${base}/elements/0000_Place-Order/element.json`)).toBe(true);
-    expect(t.has(`${base}/elements/0000_Place-Order/description.md`)).toBe(true);
+    expect(t.has(`${LANE_DIR}/lane.json`)).toBe(true);
+    expect(t.has(`${ELEMENT_DIR}/element.json`)).toBe(true);
+    expect(t.has(`${ELEMENT_DIR}/description.md`)).toBe(true);
   });
 
   it("element description.md carries the content", () => {
     const t = render(model());
-    const md = t.get(
-      "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order/description.md",
-    )!;
+    const md = t.get(`${ELEMENT_DIR}/description.md`)!;
     expect(md).toContain("Click buy");
   });
 
-  it("always materializes lane folders under a slice, even when the lane has no elements", () => {
+  it("always materializes lane folders even when the lane has no elements", () => {
     const s = model();
-    // add a second lane with no elements in s1
     applyEvent(s, ev("lane-added", { chapterId: "c1", data: { newValue: { lane: { id: "l2", label: "System", type: "system", index: 1 } } } }));
     const t = render(s);
-    const laneJson = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/system/System/lane.json";
+    const laneJson = `${CHAPTER_DIR}/lanes/l2/lane.json`;
     expect(t.has(laneJson)).toBe(true);
     const lane = JSON.parse(t.get(laneJson)!);
     expect(lane.id).toBe("l2");
@@ -78,10 +79,9 @@ describe("render layout", () => {
 
   it("does not emit play-function.ts or play-type.ts when not set", () => {
     const t = render(model());
-    const dir = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order";
-    expect(t.has(`${dir}/play-function.ts`)).toBe(false);
-    expect(t.has(`${dir}/play-type.ts`)).toBe(false);
-    const el = JSON.parse(t.get(`${dir}/element.json`)!);
+    expect(t.has(`${ELEMENT_DIR}/play-function.ts`)).toBe(false);
+    expect(t.has(`${ELEMENT_DIR}/play-type.ts`)).toBe(false);
+    const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
     expect(el.playFunctionRef).toBeUndefined();
     expect(el.playTypeRef).toBeUndefined();
   });
@@ -90,10 +90,9 @@ describe("render layout", () => {
     const s = model();
     applyEvent(s, ev("element-config-changed", { elementId: "el1", data: { newValue: { playFunction: "async function play() { return 1; }" } } }));
     const t = render(s);
-    const dir = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order";
-    expect(t.get(`${dir}/play-function.ts`)).toBe("async function play() { return 1; }");
-    const el = JSON.parse(t.get(`${dir}/element.json`)!);
-    expect(el.playFunctionRef).toBe(`${dir}/play-function.ts`);
+    expect(t.get(`${ELEMENT_DIR}/play-function.ts`)).toBe("async function play() { return 1; }");
+    const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
+    expect(el.playFunctionRef).toBe(`${ELEMENT_DIR}/play-function.ts`);
     expect(el.playTypeRef).toBeUndefined();
   });
 
@@ -101,10 +100,9 @@ describe("render layout", () => {
     const s = model();
     applyEvent(s, ev("element-config-changed", { elementId: "el1", data: { newValue: { playType: "type Input = { id: string }" } } }));
     const t = render(s);
-    const dir = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order";
-    expect(t.get(`${dir}/play-type.ts`)).toBe("type Payload = type Input = { id: string }");
-    const el = JSON.parse(t.get(`${dir}/element.json`)!);
-    expect(el.playTypeRef).toBe(`${dir}/play-type.ts`);
+    expect(t.get(`${ELEMENT_DIR}/play-type.ts`)).toBe("type Payload = type Input = { id: string }");
+    const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
+    expect(el.playTypeRef).toBe(`${ELEMENT_DIR}/play-type.ts`);
     expect(el.playFunctionRef).toBeUndefined();
   });
 
@@ -112,22 +110,21 @@ describe("render layout", () => {
     const s = model();
     applyEvent(s, ev("element-config-synced", { elementId: "el1", data: { newValue: { playFunction: "fn()", playType: "type T = void" } } }));
     const t = render(s);
-    const dir = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order";
-    expect(t.get(`${dir}/play-function.ts`)).toBe("fn()");
-    expect(t.get(`${dir}/play-type.ts`)).toBe("type Payload = type T = void");
-    const el = JSON.parse(t.get(`${dir}/element.json`)!);
-    expect(el.playFunctionRef).toBe(`${dir}/play-function.ts`);
-    expect(el.playTypeRef).toBe(`${dir}/play-type.ts`);
+    expect(t.get(`${ELEMENT_DIR}/play-function.ts`)).toBe("fn()");
+    expect(t.get(`${ELEMENT_DIR}/play-type.ts`)).toBe("type Payload = type T = void");
+    const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
+    expect(el.playFunctionRef).toBe(`${ELEMENT_DIR}/play-function.ts`);
+    expect(el.playTypeRef).toBe(`${ELEMENT_DIR}/play-type.ts`);
   });
 
   it("emits uuid-index.json mapping entity ids to their directory paths", () => {
     const t = render(model());
     expect(t.has("uuid-index.json")).toBe(true);
     const index = JSON.parse(t.get("uuid-index.json")!);
-    expect(index["c1"]).toBe("chapters/Ordering/Checkout");
-    expect(index["s1"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order");
-    expect(index["l1"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer");
-    expect(index["el1"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order");
+    expect(index["c1"]).toBe(CHAPTER_DIR);
+    expect(index["s1"]).toBe(SLICE_DIR);
+    expect(index["l1"]).toBe(LANE_DIR);
+    expect(index["el1"]).toBe(ELEMENT_DIR);
   });
 
   it("indexes an empty lane's id in uuid-index.json", () => {
@@ -135,7 +132,7 @@ describe("render layout", () => {
     applyEvent(s, ev("lane-added", { chapterId: "c1", data: { newValue: { lane: { id: "l2", label: "System", type: "system", index: 1 } } } }));
     const t = render(s);
     const index = JSON.parse(t.get("uuid-index.json")!);
-    expect(index["l2"]).toBe("chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/system/System");
+    expect(index["l2"]).toBe(`${CHAPTER_DIR}/lanes/l2`);
   });
 });
 
@@ -170,7 +167,7 @@ describe("milestones and comments", () => {
     const s = model();
     applyEvent(s, ev("element-comment-added", { elementId: "el1", data: { newValue: { id: "cm1", text: "needs review", author: "Alex", createdAt: "2026-04-30T14:19:11Z" } } }));
     const t = render(s);
-    const dir = "chapters/Ordering/Checkout/slices/0000_Place-Order/lanes/user-lane/Customer/elements/0000_Place-Order/comments";
+    const dir = `${ELEMENT_DIR}/comments`;
     const key = [...t.keys()].find((k) => k.startsWith(dir) && k.endsWith("comment.md"));
     expect(key).toBeTruthy();
     expect(t.get(key!)).toContain("needs review");
@@ -178,15 +175,15 @@ describe("milestones and comments", () => {
 });
 
 describe("sanitization and robustness", () => {
-  it("sanitizes unsafe names in paths but keeps raw in json", () => {
+  it("sanitizes unsafe names in context/name only in lane-details; chapter dir is UUID only", () => {
     const s = emptyModel("ws", "WS");
     applyEvent(s, ev("chapter-added", { chapterId: "c1", context: "A/B", data: { newValue: { id: "c1", name: "Hello: World?" } } }));
     const t = render(s);
+    // Chapter dir is just the UUID — no context or name slug
     const path = [...t.keys()].find((k) => k.endsWith("chapter.json"))!;
-    expect(path).toContain("A-B");
-    expect(path).toContain("Hello-World");
-    expect(path).not.toMatch(/c1_Hello/); // no UUID in path
-    expect(JSON.parse(t.get(path)!).name).toBe("Hello: World?"); // raw preserved
+    expect(path).toBe("chapters/c1/chapter.json");
+    expect(JSON.parse(t.get(path)!).name).toBe("Hello: World?"); // raw preserved in json
+    expect(JSON.parse(t.get(path)!).context).toBe("A/B");
   });
 
   it("is fully deterministic for the same state", () => {
@@ -200,9 +197,7 @@ describe("sanitization and robustness", () => {
 
   it("JSON omits undefined fields", () => {
     const t = render(model());
-    const sliceJson = t.get(
-      "chapters/Ordering/Checkout/slices/0000_Place-Order/slice.json",
-    )!;
+    const sliceJson = t.get(`${SLICE_DIR}/slice.json`)!;
     expect(sliceJson).not.toContain("assignee");
     expect(JSON.parse(sliceJson).status).toBe("planned");
   });
@@ -214,7 +209,7 @@ describe("scenarios", () => {
     expect([...t.keys()].some((k) => k.includes("/scenarios/"))).toBe(false);
   });
 
-  it("renders scenario.json under chapters/.../scenarios/[name]/", () => {
+  it("renders scenario.json under chapters/[uuid]/scenarios/[scenario-uuid]/", () => {
     const s = model();
     applyEvent(s, ev("scenario-created", {
       chapterId: "c1",
@@ -234,7 +229,7 @@ describe("scenarios", () => {
       },
     }));
     const t = render(s);
-    const path = "chapters/Ordering/Checkout/scenarios/Happy-Path/scenario.json";
+    const path = `${CHAPTER_DIR}/scenarios/sc1/scenario.json`;
     expect(t.has(path)).toBe(true);
     const sc = JSON.parse(t.get(path)!);
     expect(sc.id).toBe("sc1");
@@ -242,9 +237,7 @@ describe("scenarios", () => {
     expect(sc.clock).toBe("2026-01-01T00:00:00Z");
     expect(sc.chapterId).toBe("c1");
     expect(sc.createdAt).toBe("2026-10-01T00:00:00Z");
-    // Non-empty initialState is serialised
     expect(sc.initialState).toEqual({ Ordering: { Cart: {} } });
-    // Non-empty seededEvents is serialised
     expect(sc.seededEvents).toHaveLength(1);
   });
 
@@ -260,7 +253,7 @@ describe("scenarios", () => {
       },
     }));
     const t = render(s);
-    const sc = JSON.parse(t.get("chapters/Ordering/Checkout/scenarios/Empty/scenario.json")!);
+    const sc = JSON.parse(t.get(`${CHAPTER_DIR}/scenarios/sc2/scenario.json`)!);
     expect(sc.initialState).toBeUndefined();
     expect(sc.seededEvents).toBeUndefined();
     expect(sc.interactions).toBeUndefined();
@@ -284,7 +277,7 @@ describe("scenarios", () => {
       },
     }));
     const t = render(s);
-    const sc = JSON.parse(t.get("chapters/Ordering/Checkout/scenarios/With-Interactions/scenario.json")!);
+    const sc = JSON.parse(t.get(`${CHAPTER_DIR}/scenarios/sc3/scenario.json`)!);
     expect(sc.interactions).toHaveLength(1);
     expect(sc.interactions[0].stepIndex).toBe(0);
   });
@@ -296,14 +289,14 @@ describe("scenarios", () => {
       data: { scenarioId: "sc4", newValue: { scenario: { id: "sc4", name: "Temp", initial_state: {}, seeded_events: [], interactions: [] } } },
     }));
     let t = render(s);
-    expect(t.has("chapters/Ordering/Checkout/scenarios/Temp/scenario.json")).toBe(true);
+    expect(t.has(`${CHAPTER_DIR}/scenarios/sc4/scenario.json`)).toBe(true);
 
     applyEvent(s, ev("scenario-deleted", { chapterId: "c1", data: { scenarioId: "sc4" } }));
     t = render(s);
-    expect([...t.keys()].some((k) => k.includes("/Temp/"))).toBe(false);
+    expect([...t.keys()].some((k) => k.includes("/sc4/"))).toBe(false);
   });
 
-  it("scenario dir is renamed after scenario-renamed", () => {
+  it("scenario dir stays the same after scenario-renamed (UUID-keyed, name only changes in JSON)", () => {
     const s = model();
     applyEvent(s, ev("scenario-created", {
       chapterId: "c1",
@@ -311,7 +304,9 @@ describe("scenarios", () => {
     }));
     applyEvent(s, ev("scenario-renamed", { chapterId: "c1", data: { scenarioId: "sc5", newValue: { id: "sc5", name: "New Name" } } }));
     const t = render(s);
-    expect(t.has("chapters/Ordering/Checkout/scenarios/New-Name/scenario.json")).toBe(true);
-    expect([...t.keys()].some((k) => k.includes("Old-Name"))).toBe(false);
+    // Dir stays sc5 — UUID is immutable; name change is in the JSON only
+    expect(t.has(`${CHAPTER_DIR}/scenarios/sc5/scenario.json`)).toBe(true);
+    const sc = JSON.parse(t.get(`${CHAPTER_DIR}/scenarios/sc5/scenario.json`)!);
+    expect(sc.name).toBe("New Name");
   });
 });

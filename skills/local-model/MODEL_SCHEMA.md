@@ -13,28 +13,26 @@ reference for agents that read or write the model.
   workspace.json          # workspace id + name
   uuid-index.json         # { uuid → "relative/dir" }  ← resolve any id to its path
   chapters/
-    [Context]/
-      [Chapter]/
-        chapter.json
-        index.md          # generated — DO NOT EDIT
-        slices/
-          [NNNN]_[Slice]/
-            slice.json
-            details.md
-            lanes/
-              [laneType]/
-                [Lane]/
-                  lane.json
-                  elements/
-                    [NNNN]_[Element]/
-                      element.json
-                      description.md
-                      details.md
-                      play-function.ts    # only if set
-                      play-type.ts        # only if set
-        scenarios/
-          [Scenario]/
-            scenario.json
+    [chapter-uuid]/
+      chapter.json
+      index.md            # generated — DO NOT EDIT
+      slices/
+        [slice-uuid]/
+          slice.json
+          details.md
+      lanes/
+        [lane-uuid]/
+          lane.json
+      elements/
+        [element-uuid]/
+          element.json
+          description.md
+          details.md
+          play-function.ts    # only if set
+          play-type.ts        # only if set
+      scenarios/
+        [scenario-uuid]/
+          scenario.json
   milestones/
     [Milestone]/
       milestone.json
@@ -45,11 +43,11 @@ reference for agents that read or write the model.
 ```
 
 **Key facts:**
-- Directory names are sanitized slugs of the raw name. The raw value is always in the `.json`.
-- Slice and element dirs are prefixed with a zero-padded index (`0001_`, `0002_`…) that reflects their order on the board.
-- Lane dirs are NOT indexed — their order is `lane.json.index`.
-- Lanes are only materialized for slices that actually contain elements in that lane.
-- `uuid-index.json` maps every UUID to its directory. Use it to jump from a UUID (from an event or MCP call) to the right path without traversing the tree.
+- Chapter, slice, lane, element, and scenario directories are named by their UUID. Names and labels live only in the `.json` files.
+- Slices, lanes, and elements are flat siblings under their chapter — they are **not** nested under each other.
+- Elements reference their lane and slice via `laneId` and `sliceId` in `element.json`.
+- Milestones still use sanitized slug names for their directories.
+- `uuid-index.json` maps every UUID to its directory. Use it to jump from a UUID to the right path without traversing the tree.
 - `index.md` is auto-generated from the board state and overwritten on every sync — do not edit it.
 
 ---
@@ -64,33 +62,48 @@ reference for agents that read or write the model.
 
 ## Editable files (synced back to prooph board on `@proophboard/spec-stream sync-back`)
 
-These files can be created or modified by an agent. On the next `@proophboard/spec-stream sync-back` run 
+These files can be created or modified by an agent. On the next `@proophboard/spec-stream sync-back` run
 changes are pushed to prooph board workspace.
 
 > **UUID authoring:** When creating new entities (chapters, lanes, slices, elements, scenarios),
-> generate a UUID v4 and write it as the `"id"` field in the corresponding `.json` file.
-> `sync-back` forwards that UUID to the prooph board API, which accepts and stores it as-is —
-> so the UUID you assign locally is the UUID the entity will have on the board permanently.
+> generate a UUID v4 and use it as both the directory name and the `"id"` field in the
+> corresponding `.json` file. `sync-back` forwards that UUID to the prooph board API, which
+> accepts and stores it as-is — so the UUID you assign locally is the UUID the entity will have
+> on the board permanently.
 > You can therefore safely cross-reference locally-assigned UUIDs in `element.json` (`laneId`,
 > `sliceId`) and in scenario expectations before `sync-back` has been called. `model validate`
 > also recognises locally-assigned UUIDs and will not flag them as dangling references.
 
-| File | What it maps to                                                                                  |
-|------|--------------------------------------------------------------------------------------------------|
-| `element.json` | element name, type, position (laneId/sliceId/index)                                              |
-| `description.md` | element description (the short sticky-note text)                                                 |
-| `details.md` (in element dir) | element details (rich markdown content)                                                          |
-| `play-function.ts` | Exploration Mode decide/apply/read handler                                                       |
+| File | What it maps to |
+|------|-----------------|
+| `chapter.json` | chapter name, context |
+| `slice.json` | slice label, status |
+| `slice details.md` | slice details |
+| `lane.json` | lane label, type, height |
+| `element.json` | element name, type, position (laneId/sliceId/index) |
+| `description.md` (in element dir) | element description (the short sticky-note text) |
+| `details.md` (in element dir) | element details (rich markdown content) |
+| `play-function.ts` | Exploration Mode decide/apply/read handler |
 | `play-type.ts` | Exploration Mode Payload type |
-| `scenario.json` | scenario definition, interactions, expectations                                                  |
-| `slice.json` | slice label, status                                                                              |
-| `slice details.md` | slice details                                                                                    |
-| `lane.json` | lane label, height                                                                               |
-| `chapter.json` | chapter name, context                                                                            |
-| `milestone.json` | milestone name, deadline, color                                                                  |
-| `milestone description.md` | milestone description                                                                            |
+| `scenario.json` | scenario definition, interactions, expectations |
+| `milestone.json` | milestone name, deadline, color |
+| `milestone description.md` | milestone description |
 | `html snippet slug.json` | snippet name and slug |
 | `html snippet slug.html` | html snippet that gets imported into main html |
+
+---
+
+## Creating a new entity — directory naming
+
+| Entity | Directory | Example |
+|--------|-----------|---------|
+| Chapter | `chapters/[chapter-uuid]/` | `chapters/9598a1b8-406c-4366-a907-abc2d33c22be/` |
+| Slice | `chapters/[chapter-uuid]/slices/[slice-uuid]/` | `chapters/9598a1b8-.../slices/e5227bbf-.../` |
+| Lane | `chapters/[chapter-uuid]/lanes/[lane-uuid]/` | `chapters/9598a1b8-.../lanes/40e12bb9-.../` |
+| Element | `chapters/[chapter-uuid]/elements/[element-uuid]/` | `chapters/9598a1b8-.../elements/422a7caa-.../` |
+| Scenario | `chapters/[chapter-uuid]/scenarios/[scenario-uuid]/` | `chapters/9598a1b8-.../scenarios/db1b3218-.../` |
+
+Generate a fresh UUID v4 for each new entity and use it as both the directory name and the `"id"` in the `.json`.
 
 ---
 
@@ -151,8 +164,8 @@ changes are pushed to prooph board workspace.
   "laneId": "uuid",
   "sliceId": "uuid",
   "index": 0,
-  "playFunctionRef": "…/play-function.ts",
-  "playTypeRef": "…/play-type.ts"
+  "playFunctionRef": "chapters/[chapter-uuid]/elements/[element-uuid]/play-function.ts",
+  "playTypeRef":     "chapters/[chapter-uuid]/elements/[element-uuid]/play-type.ts"
 }
 ```
 `type` values: `command` | `event` | `information` | `ui` | `automation` | `hotspot`
@@ -244,9 +257,10 @@ Flat map of every UUID to the directory that contains its primary `.json`:
 
 ```json
 {
-  "2ee8e1ec-f9c9-44c5-ba42-2179aaf1cd0c": "chapters/Todo-Management/Manage-Todolist",
-  "b6deb81e-7704-4716-8e75-749325effbee": "chapters/Todo-Management/Manage-Todolist/slices/0001_Plan-Todo",
-  "9ef03fea-3c84-4f3a-956f-43a949b6dbe9": "chapters/Todo-Management/Manage-Todolist/slices/0001_Plan-Todo/lanes/information-flow/Information-Flow/elements/0000_Create-Todo"
+  "9598a1b8-406c-4366-a907-abc2d33c22be": "chapters/9598a1b8-406c-4366-a907-abc2d33c22be",
+  "e5227bbf-cf01-4c62-85b2-a8ffa48f56a9": "chapters/9598a1b8-406c-4366-a907-abc2d33c22be/slices/e5227bbf-cf01-4c62-85b2-a8ffa48f56a9",
+  "40e12bb9-5485-4399-a1d4-bcd50fa334aa": "chapters/9598a1b8-406c-4366-a907-abc2d33c22be/lanes/40e12bb9-5485-4399-a1d4-bcd50fa334aa",
+  "422a7caa-36a2-42bf-a313-3f7b3090d6b8": "chapters/9598a1b8-406c-4366-a907-abc2d33c22be/elements/422a7caa-36a2-42bf-a313-3f7b3090d6b8"
 }
 ```
 
@@ -293,20 +307,18 @@ The `type Payload = ` prefix is stripped automatically by `sync-back` before sen
 
 ## How to write a scenario (step by step)
 
-1. Find the chapter directory: `uuid-index.json["<chapterId>"]`
-2. Create a new directory under `scenarios/`: name it a sanitized slug of the scenario name (e.g. `Add-first-Todo`).
-3. Write `scenario.json` with at minimum `id` (generate a UUID v4), `chapterId`, and `name`.
+1. Find the chapter directory from `uuid-index.json["<chapterId>"]`.
+2. Generate a new UUID v4 for the scenario.
+3. Create `chapters/[chapter-uuid]/scenarios/[scenario-uuid]/scenario.json` with at minimum `id`, `chapterId`, and `name`.
 4. Add `interactions` if you have UI form input to simulate.
-5. Add `expectations` for each slice you want to assert.
-6. Run `spec-stream scenario test --chapter <path>` to verify before committing.
-
-To find slice IDs for expectations, read `slice.json` in the relevant slice directory, or look them up in `uuid-index.json` (search by partial path).
+5. Add `expectations` for each slice you want to assert. Use `uuid-index.json` to look up slice and element IDs.
+6. Run `spec-stream scenario test --chapter <path>` to verify before sync-back.
 
 ---
 
 ## How sync-back works
 
-Run `@proophboard/spec-stream sync-back`. It diffs 
+Run `@proophboard/spec-stream sync-back`. It diffs
 changes against manifest and translates them into prooph board API calls:
 
 - Modified `element.json` → rename and/or move element
@@ -317,8 +329,7 @@ changes against manifest and translates them into prooph board API calls:
   so the UUID you assigned locally is preserved on the board)
 - Deleted primary `.json` → delete the entity
 
-If any API call fails, the command exits non-zero. Fix the issue
-and try again.
+If any API call fails, the command exits non-zero. Fix the issue and try again.
 
 **Preview without committing:**
 ```sh
@@ -341,6 +352,5 @@ Checks:
 - Scenario `sliceId` and `elementId` in expectations exist in `uuid-index.json` or are
   locally-assigned UUIDs (same exemption as above)
 - No duplicate UUIDs in `uuid-index.json` pointing to different dirs
-- Directory slug matches the sanitized name in the corresponding `.json`
 
 Exits 0 if clean, 1 if issues found. Use `--verbose` to see all checked paths.

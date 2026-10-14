@@ -33,10 +33,10 @@ const LANE_ID    = "lane-uuid-1";
 const ELEMENT_ID = "element-uuid-1";
 const MILESTONE_ID = "milestone-uuid-1";
 
-const CHAPTER_DIR  = "chapters/App/My-Chapter";
-const SLICE_DIR    = `${CHAPTER_DIR}/slices/0001_My-Slice`;
-const LANE_DIR     = `${SLICE_DIR}/lanes/information-flow/My-Lane`;
-const ELEMENT_DIR  = `${LANE_DIR}/elements/0001_My-Element`;
+const CHAPTER_DIR  = `chapters/${CHAPTER_ID}`;
+const SLICE_DIR    = `${CHAPTER_DIR}/slices/${SLICE_ID}`;
+const LANE_DIR     = `${CHAPTER_DIR}/lanes/${LANE_ID}`;
+const ELEMENT_DIR  = `${CHAPTER_DIR}/elements/${ELEMENT_ID}`;
 const MILESTONE_DIR = "milestones/My-Milestone";
 
 function setupChapter(root: string): void {
@@ -300,13 +300,15 @@ describe("buildOperations", () => {
 
   // ─── Rename/move ──────────────────────────────────────────────────────────
   it("rename diff on element in same lane emits element.rename", async () => {
-    const NEW_ELEMENT_DIR = `${LANE_DIR}/elements/0001_New-Name`;
+    const NEW_ELEMENT_DIR = `${CHAPTER_DIR}/elements/element-uuid-2`;
     setupLane(root);
     writeJson(root, `${NEW_ELEMENT_DIR}/element.json`, {
       id: ELEMENT_ID, type: "command", name: "New Name", context: "App",
       laneId: LANE_ID, sliceId: SLICE_ID, index: 0,
     });
+    // oldFields: same lane/slice as new — only the name changed
     const diffs: EntityDiff[] = [renameDiff(NEW_ELEMENT_DIR, "element", ELEMENT_ID, ELEMENT_DIR)];
+    diffs[0].oldFields = { name: "My Element", laneId: LANE_ID, sliceId: SLICE_ID, index: 0 };
     const ops = await buildOperations({ syncRootAbs: root, diffs });
     const renames = ops.filter((o) => o.kind === "element.rename");
     expect(renames).toHaveLength(1);
@@ -321,16 +323,16 @@ describe("buildOperations", () => {
   });
 
   it("rename diff on element in different lane emits element.move", async () => {
-    const NEW_LANE_DIR    = `${SLICE_DIR}/lanes/system/System-Lane`;
-    const NEW_ELEMENT_DIR = `${NEW_LANE_DIR}/elements/0001_My-Element`;
+    const NEW_ELEMENT_DIR = `${CHAPTER_DIR}/elements/element-uuid-2`;
     const NEW_LANE_ID     = "lane-uuid-2";
     setupLane(root);
-    writeJson(root, `${NEW_LANE_DIR}/lane.json`, { id: NEW_LANE_ID, label: "System Lane", type: "system", index: 1 });
     writeJson(root, `${NEW_ELEMENT_DIR}/element.json`, {
       id: ELEMENT_ID, type: "command", name: "My Element", context: "App",
       laneId: NEW_LANE_ID, sliceId: SLICE_ID, index: 0,
     });
+    // oldFields: different laneId — this is a move
     const diffs: EntityDiff[] = [renameDiff(NEW_ELEMENT_DIR, "element", ELEMENT_ID, ELEMENT_DIR)];
+    diffs[0].oldFields = { name: "My Element", laneId: LANE_ID, sliceId: SLICE_ID, index: 0 };
     const ops = await buildOperations({ syncRootAbs: root, diffs });
     const moves = ops.filter((o) => o.kind === "element.move");
     expect(moves).toHaveLength(1);
