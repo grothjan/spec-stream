@@ -58,22 +58,20 @@ server, while they continue to **write** changes through the prooph board API/MC
                 [createdAt]_[commentId]/
                   comment.json         # id, author, userId, createdAt
                   comment.md           # text (with <mention userId="…"> markup)
-              lanes/
-                [laneType]/
-                  [Lane label]/
-                    lane.json          # id, label, type, index, height, icon
-                    elements/
-                      [index]_[Element name]/
-                        element.json   # id, type, name, context, laneId, sliceId, index,
-                                       #   icon, noArrowSource, noArrowTarget, detailsRef,
-                                       #   playFunctionRef? (when playFunction set),
-                                       #   playTypeRef? (when playType set)
-                        description.md  # per-placement description
-                        details.md      # copy of shared details
-                        play-function.ts  # (optional) Exploration Mode play function
-                        play-type.ts      # (optional) Exploration Mode play type
-                        comments/
-                          [createdAt]_[commentId]/{comment.json, comment.md}
+          lanes/
+            [laneType]/
+              [Lane label]/
+                lane.json          # id, label, type, index, height, icon
+                elements/
+                  [index]_[Element name]/
+                    element.json   # id, type, name, context, laneId, sliceId, index,
+                                   #   icon, noArrowSource, noArrowTarget
+                    description.md  # per-placement description
+                    details.md      # copy of shared details
+                    play-function.ts  # (optional) Exploration Mode play function
+                    play-type.ts      # (optional) Exploration Mode play type
+                    comments/
+                      [createdAt]_[commentId]/{comment.json, comment.md}
     lane-details/                      # canonical shared lane details
     milestones/
       [Milestone name]/
@@ -222,11 +220,6 @@ is relative to `.spec-stream/model/`. All name/label segments go through the san
 | `lane-details-synchronized` | fan-out details to all lanes sharing `type`+`name` | rewrite canonical + all placement copies |
 | `lane-icon-changed` | set `icon` | update `lane.json.icon` |
 | `lane-resized` | set `height` | update `lane.json.height` |
-
-> **Lane-per-slice rendering.** Because lanes are nested under slices, a lane is
-> materialized once per slice in the chapter. A lane mutation fans out to each slice's
-> copy. The reducer keeps lanes in `state` once (by id) and `render` expands them per
-> slice; `diffAndWrite` touches only the copies that actually changed.
 
 ### Element
 

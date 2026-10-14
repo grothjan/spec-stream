@@ -328,38 +328,37 @@ incrementally. Restarts catch up on missed events automatically.
 ### What gets written
 
 ```
-.spec-stream/
-  sync-state.json            # resume cursor (do not edit)
-  model/
-    workspace.json
-    uuid-index.json          # flat { uuid → "relative/dir" } for fast id resolution
-    chapters/
-      [Context]/
-        [Chapter name]/
-          chapter.json
-          index.md           # generated slice summary
-          slices/
-            [index]_[Slice]/
-              slice.json
-              details.md
-              lanes/
-                [laneType]/
-                  [Lane]/
-                    elements/
-                      [index]_[Element]/
-                        element.json
-                        description.md
-                        details.md
-                        play-function.ts   # if set
-                        play-type.ts       # if set
-          scenarios/
-            [Scenario name]/
-              scenario.json  # Exploration Mode scenario
-    lane-details/            # canonical shared lane details
-    milestones/
-      [Milestone]/
-        milestone.json
-        description.md
+.spec-stream/model/
+  workspace.json          # workspace id + name
+  uuid-index.json         # { uuid → "relative/dir" }  ← resolve any id to its path
+  chapters/
+    [chapter-uuid]/
+      chapter.json
+      index.md            # generated — DO NOT EDIT
+      slices/
+        [slice-uuid]/
+          slice.json
+          details.md
+      lanes/
+        [lane-uuid]/
+          lane.json
+      elements/
+        [element-uuid]/
+          element.json
+          description.md
+          details.md
+          play-function.ts    # only if set
+          play-type.ts        # only if set
+      scenarios/
+        [scenario-uuid]/
+          scenario.json
+  milestones/
+    [milestone-uuid]/
+      milestone.json
+      description.md
+  html-snippets/
+    [slug].html
+    [slug].json
 ```
 
 Every `.json` carries the raw values (names, ids). Directory names use sanitized

@@ -82,8 +82,8 @@ describe("render layout", () => {
     expect(t.has(`${ELEMENT_DIR}/play-function.ts`)).toBe(false);
     expect(t.has(`${ELEMENT_DIR}/play-type.ts`)).toBe(false);
     const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
-    expect(el.playFunctionRef).toBeUndefined();
-    expect(el.playTypeRef).toBeUndefined();
+    expect(el).not.toHaveProperty("playFunctionRef");
+    expect(el).not.toHaveProperty("playTypeRef");
   });
 
   it("emits play-function.ts when playFunction is set", () => {
@@ -92,8 +92,8 @@ describe("render layout", () => {
     const t = render(s);
     expect(t.get(`${ELEMENT_DIR}/play-function.ts`)).toBe("async function play() { return 1; }");
     const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
-    expect(el.playFunctionRef).toBe(`${ELEMENT_DIR}/play-function.ts`);
-    expect(el.playTypeRef).toBeUndefined();
+    expect(el).not.toHaveProperty("playFunctionRef");
+    expect(el).not.toHaveProperty("playTypeRef");
   });
 
   it("emits play-type.ts when playType is set", () => {
@@ -102,8 +102,8 @@ describe("render layout", () => {
     const t = render(s);
     expect(t.get(`${ELEMENT_DIR}/play-type.ts`)).toBe("type Payload = type Input = { id: string }");
     const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
-    expect(el.playTypeRef).toBe(`${ELEMENT_DIR}/play-type.ts`);
-    expect(el.playFunctionRef).toBeUndefined();
+    expect(el).not.toHaveProperty("playFunctionRef");
+    expect(el).not.toHaveProperty("playTypeRef");
   });
 
   it("emits both play-function.ts and play-type.ts when both are set", () => {
@@ -113,8 +113,8 @@ describe("render layout", () => {
     expect(t.get(`${ELEMENT_DIR}/play-function.ts`)).toBe("fn()");
     expect(t.get(`${ELEMENT_DIR}/play-type.ts`)).toBe("type Payload = type T = void");
     const el = JSON.parse(t.get(`${ELEMENT_DIR}/element.json`)!);
-    expect(el.playFunctionRef).toBe(`${ELEMENT_DIR}/play-function.ts`);
-    expect(el.playTypeRef).toBe(`${ELEMENT_DIR}/play-type.ts`);
+    expect(el).not.toHaveProperty("playFunctionRef");
+    expect(el).not.toHaveProperty("playTypeRef");
   });
 
   it("emits uuid-index.json mapping entity ids to their directory paths", () => {

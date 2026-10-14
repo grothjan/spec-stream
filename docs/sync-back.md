@@ -119,7 +119,7 @@ Within a single run, operations are executed in this order to respect dependenci
 4. Element creates
 5. Content updates (description, details, status, rename, etc.)
 6. Element moves
-7. Deletes (elements → slices → lanes → chapters → milestones)
+7. Deletes (elements → slices/lanes/chapters/milestones in any order)
 
 ### What gets synced
 

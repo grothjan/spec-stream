@@ -229,8 +229,6 @@ function renderElement(
       icon: el.icon,
       noArrowSource: el.noArrowSource,
       noArrowTarget: el.noArrowTarget,
-      playFunctionRef: el.playFunction !== undefined ? `${dir}/play-function.ts` : undefined,
-      playTypeRef: el.playType !== undefined ? `${dir}/play-type.ts` : undefined,
     }),
   );
   tree.set(`${dir}/description.md`, markdown(el.description));

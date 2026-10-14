@@ -137,25 +137,22 @@ async function loadElement(elementJsonPath: string): Promise<Element> {
   const el = await readJson<ElementJson>(elementJsonPath);
   const dir = elementJsonPath.slice(0, -"element.json".length);
 
+  // Auto-discover play files — check existence and read if present
   let playFunction: string | undefined;
-  if (el.playFunctionRef) {
-    try {
-      playFunction = await readFile(join(dir, "play-function.ts"), "utf8");
-    } catch {
-      /* absent — leave undefined */
-    }
+  try {
+    playFunction = await readFile(join(dir, "play-function.ts"), "utf8");
+  } catch {
+    /* absent — leave undefined */
   }
 
   let playType: string | undefined;
-  if (el.playTypeRef) {
-    try {
-      const raw = await readFile(join(dir, "play-type.ts"), "utf8");
-      // Stored on disk as "type Payload = <expr>" — extract the bare expression.
-      const parsed = parsePlayType(raw);
-      playType = parsed.ok ? parsed.value : undefined;
-    } catch {
-      /* absent — leave undefined */
-    }
+  try {
+    const raw = await readFile(join(dir, "play-type.ts"), "utf8");
+    // Stored on disk as "type Payload = <expr>" — extract the bare expression.
+    const parsed = parsePlayType(raw);
+    playType = parsed.ok ? parsed.value : undefined;
+  } catch {
+    /* absent — leave undefined */
   }
 
   return {
@@ -222,6 +219,4 @@ interface ElementJson {
   icon?: string;
   noArrowSource?: boolean;
   noArrowTarget?: boolean;
-  playFunctionRef?: string;
-  playTypeRef?: string;
 }

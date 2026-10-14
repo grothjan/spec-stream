@@ -163,14 +163,11 @@ Generate a fresh UUID v4 for each new entity and use it as both the directory na
   "context": "Todo Management",
   "laneId": "uuid",
   "sliceId": "uuid",
-  "index": 0,
-  "playFunctionRef": "chapters/[chapter-uuid]/elements/[element-uuid]/play-function.ts",
-  "playTypeRef":     "chapters/[chapter-uuid]/elements/[element-uuid]/play-type.ts"
+  "index": 0
 }
 ```
-`type` values: `command` | `event` | `information` | `ui` | `automation` | `hotspot`
+Play function and type are auto-discovered: if `play-function.ts` or `play-type.ts` exist in the element directory, they are loaded automatically. No refs needed.
 
-`playFunctionRef` / `playTypeRef` are only present when the corresponding file exists.
 
 ### `scenario.json`
 ```json

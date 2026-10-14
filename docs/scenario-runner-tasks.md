@@ -57,14 +57,12 @@ export async function resolveChapterDir(
 
 1. Read `chapter.json` → `{ id, name, context, mode, sliceOrder, laneOrder }`.
 2. Glob `slices/*/slice.json`; for each, read and build a `Slice`. Sort by `index`.
-3. Glob `slices/*/lanes/*/` for `lane.json`. De-duplicate lanes by `id` (each lane
-   appears once per slice on disk — the loader takes the first occurrence for metadata,
-   which is identical across copies). Build `Lane[]`.
-4. Glob `slices/*/lanes/*/elements/*/element.json`; for each element:
+3. Glob `lanes/*/lane.json` for `lane.json`. Build `Lane[]` from unique `id`s.
+4. Glob `lanes/*/elements/*/element.json`; for each element:
    - Read `element.json` → base fields (`id, type, name, context, laneId, sliceId,
      index, icon, noArrowSource, noArrowTarget`).
-   - If `playFunctionRef` is set, read the sibling `play-function.ts` → `element.playFunction`.
-   - If `playTypeRef` is set, read the sibling `play-type.ts` (stored as
+   - Auto-discover: read `play-function.ts` sibling if present → `element.playFunction`.
+   - Auto-discover: read `play-type.ts` sibling if present (stored as
      `type Payload = <expr>`) and call `parsePlayType` to extract the bare expression
      → `element.playType`. (Store the bare expression, not the wrapped form, to match
      what the browser's `Element.playType` contains.)
@@ -82,8 +80,8 @@ with a hand-built `ModelState`) written to a temp directory via `fs.mkdtemp`. As
 - Reconstructed `chapter.id`, `name`, `context`, `mode` match the source.
 - All slices present with correct `index` ordering.
 - All elements present, each with the correct `laneId` / `sliceId` / `index`.
-- An element with `playFunctionRef` set has its `playFunction` populated.
-- An element with `playTypeRef` set has its `playType` set to the **bare** expression
+- An element with a `play-function.ts` file has its `playFunction` populated.
+- An element with a `play-type.ts` file has its `playType` set to the **bare** expression
   (without the `type Payload =` wrapper).
 - `resolveChapterDir` by UUID finds the right directory via `uuid-index.json`.
 
