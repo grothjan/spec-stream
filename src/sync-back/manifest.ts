@@ -220,12 +220,16 @@ export function hashContent(...contents: (string | undefined)[]): string {
  */
 export function readEntityContentHashes(modelDirAbs: string, entityDir: string): Record<string, string> {
   const CONTENT_FILES = ["description.md", "details.md", "play-function.ts", "play-type.ts"];
+  // Markdown files are trimEnd()-normalised before hashing to match readMarkdownIfExists
+  // (used in operationBuilder) and buildManifestFromTree (used by sync).
+  const MARKDOWN_FILES = new Set(["description.md", "details.md"]);
   const result: Record<string, string> = {};
   for (const cf of CONTENT_FILES) {
     try {
       const abs = join(modelDirAbs, entityDir, cf);
       if (existsSync(abs)) {
-        result[cf] = hashContent(readFileSync(abs, "utf8"));
+        const raw = readFileSync(abs, "utf8");
+        result[cf] = hashContent(MARKDOWN_FILES.has(cf) ? raw.trimEnd() : raw);
       }
     } catch { /* skip */ }
   }
@@ -312,12 +316,18 @@ export function buildManifestFromTree(
 
     // Store per-file content hashes for content files so operationBuilder can skip
     // individual content ops (e.g. update-description) when only details changed.
+    // Markdown files are trimEnd()-normalised before hashing so the hash matches what
+    // readEntityContentHashes (and readMarkdownIfExists in operationBuilder) produce
+    // when reading those files back from disk.  The renderer appends a trailing "\n" to
+    // every markdown file (see render.ts `markdown()`), so without trimming the
+    // manifest hash would never match the trimmed disk read → spurious update ops.
     const CONTENT_FILES = ["description.md", "details.md", "play-function.ts", "play-type.ts"];
+    const MARKDOWN_FILES = new Set(["description.md", "details.md"]);
     const contentHashes: Record<string, string> = {};
     for (const cf of CONTENT_FILES) {
       const cfContent = tree.get(`${entityDir}/${cf}`);
       if (cfContent !== undefined) {
-        contentHashes[cf] = hashContent(cfContent);
+        contentHashes[cf] = hashContent(MARKDOWN_FILES.has(cf) ? cfContent.trimEnd() : cfContent);
       }
     }
     if (Object.keys(contentHashes).length > 0) entry.contentHashes = contentHashes;
