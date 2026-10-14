@@ -126,8 +126,7 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
 
   if (verbose) {
     for (const d of diffs) {
-      const extra = d.oldEntityDir ? ` (was: ${d.oldEntityDir})` : "";
-      debug(`  ${d.status.toUpperCase().padEnd(6)} ${d.kind} @ ${d.entityDir}${extra}`);
+      debug(`  ${d.status.toUpperCase().padEnd(6)} ${d.kind} @ ${d.entityDir}`);
     }
   }
 
