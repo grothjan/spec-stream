@@ -18,6 +18,7 @@ import type { Logger } from "./logging/logger.js";
 import { Projection } from "./sync/projection.js";
 import { RestClient, RestError } from "./sync/restClient.js";
 import { RateLimiter, type RateLimiterOptions } from "./util/rateLimiter.js";
+import { ReorderBuffer } from "./reorderBuffer.js";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 
 export interface AppOptions {
@@ -61,6 +62,7 @@ export class App {
   private renewTimer?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private stats = { received: 0, run: 0, failed: 0, lastEventAt: 0 };
+  private reorderBuffer?: ReorderBuffer;
   /** ISO timestamp of the last event we processed (for reconnect catch-up). */
   private lastEventCreatedAt?: string;
   /** Recent event ids, to dedupe the boundary overlap when replaying the gap. */
@@ -421,13 +423,19 @@ export class App {
       }
     }
 
+    // Buffer incoming realtime events for a short window so that events emitted within
+    // the same DB transaction (e.g. element-added + element-config-synced) are sorted
+    // by createdAt before the projection and router see them. Without this, the sync
+    // event can arrive before element-added and silently no-op in the reducer.
+    this.reorderBuffer = new ReorderBuffer({ onEvent: (e) => this.onEvent(e) });
+
     this.realtime = new RealtimeClient({
       supabaseUrl: this.token.supabaseUrl,
       supabaseAnonKey: this.token.supabaseAnonKey,
       workspaceId: this.token.workspaceId,
       accessToken: this.token.accessToken,
       createClient: this.createSupabase,
-      onEvent: (e) => this.onEvent(e),
+      onEvent: (e) => this.reorderBuffer!.push(e),
       onStatus: (status, err) => this.onRealtimeStatus(status, err),
       onReconnectScheduled: (delayMs, attempt) =>
         this.log.warn("conn.reconnect", { delayMs, attempt }),
@@ -442,6 +450,8 @@ export class App {
     this.stopped = true;
     if (this.renewTimer) clearTimeout(this.renewTimer);
     await this.realtime?.disconnect();
+    // Flush any events still sitting in the reorder buffer before shutting down.
+    this.reorderBuffer?.flush();
     // Persist any pending debounced projection write before shutting down.
     try {
       this.projection?.flushNow();
