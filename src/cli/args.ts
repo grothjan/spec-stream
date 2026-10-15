@@ -222,7 +222,7 @@ Usage:
 Scenario subcommands (require localSync to be enabled):
   spec-stream scenario typecheck [--chapter <id|path>] [--scenario <id|name>]
   spec-stream scenario run       --chapter <id|path>  --scenario <id|name>  [--playhead <n>]
-  spec-stream scenario test      --chapter <id|path> (--scenario <id|name> | --all)
+  spec-stream scenario test      [--chapter <id|path>] (--scenario <id|name> | --all)
 
 Model subcommands (require localSync to be enabled):
   spec-stream model validate         Check the local model tree for structural issues
@@ -238,9 +238,9 @@ Options:
                              (for sync-back: show operations without executing them)
       --from-commit <sha>    Base commit for sync-back diff (default: HEAD)
       --force                Overwrite an existing config (with "init")
-      --chapter <id|path>    Chapter UUID or path (scenario commands)
+      --chapter <id|path>    Chapter UUID or path (scenario commands). Required for run/test single scenario; optional with --all
       --scenario <id|name>   Scenario UUID or name (scenario commands)
-      --all                  Run/test all scenarios in the chapter
+      --all                  Run/test all scenarios. If --chapter is provided, only scenarios from that chapter; otherwise all scenarios from all chapters
       --playhead <n>         Stop fold at step n (scenario run only)
   -v, --verbose              Debug logging
   -q, --quiet                Warnings and errors only

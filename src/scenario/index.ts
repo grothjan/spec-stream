@@ -9,7 +9,7 @@ import { resolve, join } from "node:path";
 import { existsSync } from "node:fs";
 import type { CliOptions } from "../cli/args.js";
 import type { SpecStreamConfig } from "../config/schema.js";
-import type { Chapter, Scenario } from "@proophboard/exploration-runtime";
+import type { Chapter } from "@proophboard/exploration-runtime";
 import {
   loadChapterFromDisk,
   resolveChapterDir,
@@ -23,8 +23,20 @@ import { runScenarioFromDisk } from "./run.js";
 import { testScenariosFromDisk } from "./test.js";
 import { typecheckChapter } from "./typecheck.js";
 import type { PlayFunctionDiagnostic } from "./typecheck.js";
+import type { ScenarioRunResult } from "@proophboard/exploration-runtime";
 import type { ScenarioRunOutput } from "./run.js";
 import type { ScenarioTestOutput } from "./test.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANSI color codes for colorful output
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RESET = "\x1b[0m";
+const GREEN = "\x1b[32m";
+const YELLOW = "\x1b[33m";
+const RED = "\x1b[31m";
+const BLUE = "\x1b[34m";
+const BOLD = "\x1b[1m";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point
@@ -92,7 +104,7 @@ async function cmdTypecheck(opts: CliOptions, modelRoot: string): Promise<void> 
   }
 
   if (totalDiags.length === 0) {
-    process.stdout.write(`✓ No type errors found.\n`);
+    process.stdout.write(`${GREEN}✓${RESET} No type errors found.\n`);
     return;
   }
 
@@ -105,10 +117,10 @@ async function cmdTypecheck(opts: CliOptions, modelRoot: string): Promise<void> 
   }
 
   for (const [label, diags] of byElement) {
-    process.stdout.write(`\n${label}:\n`);
+    process.stdout.write(`\n${BOLD}${label}:${RESET}\n`);
     for (const d of diags) {
       process.stdout.write(
-        `  [${d.kind}] ${d.line}:${d.col}  TS${d.code}: ${d.message}\n`,
+        `  ${RED}[${d.kind}]${RESET} ${d.line}:${d.col}  TS${d.code}: ${d.message}\n`,
       );
     }
   }
@@ -140,7 +152,7 @@ async function cmdRun(opts: CliOptions, modelRoot: string): Promise<void> {
 }
 
 function printRunOutput(output: ScenarioRunOutput): void {
-  process.stdout.write(`\n── Scenario: ${output.scenarioName} ──\n`);
+  process.stdout.write(`\n── ${BOLD}Scenario: ${output.scenarioName}${RESET} ──\n`);
   process.stdout.write(`Clock: ${output.clockISO ?? "(wall clock)"}\n\n`);
 
   process.stdout.write(`Events (${output.events.length}):\n`);
@@ -148,7 +160,7 @@ function printRunOutput(output: ScenarioRunOutput): void {
     process.stdout.write(`  (none)\n`);
   } else {
     for (const ev of output.events) {
-      process.stdout.write(`  [${ev.context}] ${ev.name}\n`);
+      process.stdout.write(`  [${BLUE}${ev.context}${RESET}] ${ev.name}\n`);
       if (Object.keys(ev.payload ?? {}).length > 0) {
         process.stdout.write(`    ${JSON.stringify(ev.payload)}\n`);
       }
@@ -172,7 +184,7 @@ function printRunOutput(output: ScenarioRunOutput): void {
   if (output.errors.length > 0) {
     process.stdout.write(`\nErrors (${output.errors.length}):\n`);
     for (const err of output.errors) {
-      process.stdout.write(`  [${err.kind}] ${err.message}\n`);
+      process.stdout.write(`  ${RED}[${err.kind}]${RESET} ${err.message}\n`);
     }
   }
   process.stdout.write(`\n`);
@@ -183,10 +195,6 @@ function printRunOutput(output: ScenarioRunOutput): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function cmdTest(opts: CliOptions, modelRoot: string): Promise<void> {
-  if (!opts.chapterRef) {
-    process.stderr.write(`spec-stream scenario test: --chapter is required\n`);
-    process.exit(1);
-  }
   if (!opts.scenarioRef && !opts.all) {
     process.stderr.write(
       `spec-stream scenario test: provide --scenario <id|name> or --all\n`,
@@ -194,54 +202,98 @@ async function cmdTest(opts: CliOptions, modelRoot: string): Promise<void> {
     process.exit(1);
   }
 
-  const chapterDir = await resolveChapterDir(modelRoot, opts.chapterRef);
-  const chapter = await loadChapterFromDisk(chapterDir);
+  const chapters = await resolveChapters(opts, modelRoot);
+  let totalResults: ScenarioRunResult[] = [];
+  let totalHasBroken = false;
+  let totalNeutralCount = 0;
+  let chapterNames: string[] = [];
 
-  let scenarios: Scenario[];
   if (opts.all) {
-    const dirs = await listScenarioDirs(chapterDir);
-    scenarios = await Promise.all(dirs.map(loadScenarioFromDisk));
+    // When --all, test all scenarios from the chapter(s)
+    for (const chapter of chapters) {
+      const chapterDir = await resolveChapterDir(modelRoot, chapter.id);
+      const dirs = await listScenarioDirs(chapterDir);
+      const scenarios = await Promise.all(dirs.map(loadScenarioFromDisk));
+
+      const output = await testScenariosFromDisk(chapter, scenarios);
+      totalResults = totalResults.concat(output.results);
+      totalHasBroken = totalHasBroken || output.hasBroken;
+      totalNeutralCount += output.neutralCount;
+      chapterNames.push(chapter.name);
+    }
   } else {
+    // When targeting specific scenario (without --all), chapter is required
+    if (!opts.chapterRef) {
+      process.stderr.write(`spec-stream scenario test: --chapter is required when not using --all\n`);
+      process.exit(1);
+    }
+
+    const chapterDir = await resolveChapterDir(modelRoot, opts.chapterRef);
+    const chapter = await loadChapterFromDisk(chapterDir);
+    chapterNames = [chapter.name];
+
     const scenarioDir = await resolveScenarioDir(chapterDir, opts.scenarioRef!);
-    scenarios = [await loadScenarioFromDisk(scenarioDir)];
+    const scenarios = [await loadScenarioFromDisk(scenarioDir)];
+
+    const output = await testScenariosFromDisk(chapter, scenarios);
+    totalResults = totalResults.concat(output.results);
+    totalHasBroken = output.hasBroken;
+    totalNeutralCount = output.neutralCount;
   }
 
-  const output = await testScenariosFromDisk(chapter, scenarios);
-  printTestOutput(output);
+  printTestOutput({ results: totalResults, hasBroken: totalHasBroken, neutralCount: totalNeutralCount }, chapterNames);
 
-  if (output.hasBroken) process.exit(1);
+  if (totalHasBroken) process.exit(1);
 }
 
-function printTestOutput(output: ScenarioTestOutput): void {
+function printTestOutput(output: ScenarioTestOutput, chapterNames: string[]): void {
   let passed = 0;
   let broken = 0;
+  let neutral = 0;
 
   for (const result of output.results) {
-    const icon = result.status === "pass" ? "✓" : result.status === "broken" ? "✗" : "○";
-    process.stdout.write(`  ${icon} ${result.scenarioName}  [${result.status}]\n`);
+    let statusColor: string;
+    let statusIcon: string;
+    
+    if (result.status === "pass") {
+      statusColor = GREEN;
+      statusIcon = "✓";
+      passed++;
+    } else if (result.status === "broken") {
+      statusColor = RED;
+      statusIcon = "✗";
+      broken++;
+    } else {
+      statusColor = YELLOW;
+      statusIcon = "○";
+      neutral++;
+    }
+
+    process.stdout.write(`  ${statusColor}${statusIcon}${RESET} ${result.scenarioName}  [${statusColor}${result.status}${RESET}]\n`);
 
     if (result.status === "broken") {
-      broken++;
       for (const er of result.expectationResults) {
         if (!er.matched) {
           process.stdout.write(
-            `      ${er.kind} on slice ${er.sliceId}: ${er.failureKind ?? "mismatch"}` +
+            `      ${RED}${er.kind}${RESET} on slice ${er.sliceId}: ${er.failureKind ?? "mismatch"}` +
             (er.message ? ` — ${er.message}` : "") + "\n",
           );
         }
       }
       for (const se of result.structuralErrors) {
-        process.stdout.write(`      [${se.kind}] ${se.message}\n`);
+        process.stdout.write(`      ${RED}[${se.kind}]${RESET} ${se.message}\n`);
       }
-    } else if (result.status === "pass") {
-      passed++;
     }
   }
 
-  const neutral = output.neutralCount;
-  process.stdout.write(
-    `\n${passed} passed, ${broken} broken, ${neutral} neutral\n`,
-  );
+  // Summary line with colored counts
+  let summaryParts: string[] = [];
+  if (passed > 0) summaryParts.push(`${GREEN}${passed} passed${RESET}`);
+  if (broken > 0) summaryParts.push(`${RED}${broken} broken${RESET}`);
+  if (neutral > 0) summaryParts.push(`${YELLOW}${neutral} neutral${RESET}`);
+
+  const chapterSummary = chapterNames.length > 0 ? ` ${BLUE}in ${chapterNames.join(", ")}${RESET}` : "";
+  process.stdout.write(`\n${summaryParts.join(", ")}${chapterSummary}\n`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -258,17 +310,18 @@ async function resolveChapters(
     const chaptersRoot = join(modelRoot, "chapters");
     const chapters: Chapter[] = [];
     try {
-      const contexts = await readdir(chaptersRoot);
-      for (const ctx of contexts) {
-        const ctxDir = join(chaptersRoot, ctx);
-        const names = await readdir(ctxDir);
-        for (const name of names) {
-          const dir = join(ctxDir, name);
-          try {
+      const entries = await readdir(chaptersRoot);
+      for (const entry of entries) {
+        const dir = join(chaptersRoot, entry);
+        // Skip non-directories or entries without chapter.json
+        try {
+          const chapterJsonPath = join(dir, "chapter.json");
+          // Check if chapter.json exists (direct check without trying to load)
+          if (existsSync(chapterJsonPath)) {
             chapters.push(await loadChapterFromDisk(dir));
-          } catch {
-            // skip non-chapter dirs
           }
+        } catch {
+          // skip non-chapter dirs
         }
       }
     } catch {
