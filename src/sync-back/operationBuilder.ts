@@ -726,7 +726,7 @@ function readFileIfExists(root: string, relPath: string): string | null {
 
 /** Strip the `type Payload = ` wrapper that render.ts adds to play-type.ts. */
 function stripPlayTypeWrapper(content: string): string {
-  return content.replace(/^type Payload = /, "").trim();
+  return content.replace(/^type Payload = /, "").trim().replace(/;$/, "");
 }
 
 /**
