@@ -363,6 +363,9 @@ async function runPreSyncChecks(
   let hasBroken = false;
   let neutralCount = 0;
   let scenarioCount = 0;
+  // Capture verbose runtime console.log output per-chapter so we only show it
+  // when a scenario is broken — avoids polluting agent context on every run.
+  const brokenChapterLogs: Array<{ chapterDir: string; log: string }> = [];
   try {
     for (const dirName of chaptersDirs) {
       const chapterDir = join(chaptersRoot, dirName);
@@ -387,12 +390,32 @@ async function runPreSyncChecks(
 
         if (scenarios.length > 0) {
           const { handlers } = await transpileHandlers(chapter);
-          const results = runAllScenarios(chapter, scenarios, handlers);
+
+          // Capture runtime console.log output for this chapter.
+          const captured: string[] = [];
+          const origLog = console.log;
+          console.log = (...args: unknown[]) => {
+            captured.push(args.map(String).join(" "));
+          };
+          let results: Awaited<ReturnType<typeof runAllScenarios>>;
+          try {
+            results = runAllScenarios(chapter, scenarios, handlers);
+          } finally {
+            console.log = origLog;
+          }
           scenarioCount += results.length;
 
+          let chapterHasBroken = false;
           for (const r of results) {
-            if (r.status === "broken") hasBroken = true;
-            else if (r.status === "neutral") neutralCount++;
+            if (r.status === "broken") {
+              hasBroken = true;
+              chapterHasBroken = true;
+            } else if (r.status === "neutral") neutralCount++;
+          }
+
+          // Only keep captured output for chapters with broken scenarios.
+          if (chapterHasBroken && captured.length > 0) {
+            brokenChapterLogs.push({ chapterDir: dirName, log: captured.join("\n") });
           }
         }
       } catch (err) {
@@ -405,6 +428,11 @@ async function runPreSyncChecks(
   }
 
   if (hasBroken) {
+    // Show captured runtime output only for chapters with broken scenarios.
+    for (const { chapterDir: dirName, log: captured } of brokenChapterLogs) {
+      log(`  ── Runtime output for chapter ${dirName} ──`);
+      log(`  ${captured}`);
+    }
     throw new Error("Scenario tests failed. Fix broken expectations before syncing back.");
   }
   if (neutralCount > 0) {
