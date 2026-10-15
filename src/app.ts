@@ -120,6 +120,7 @@ export class App {
           endpoint: this.config.endpoint,
           apiKey: this.apiKey,
           fetchImpl: this.fetchImpl,
+          logger: this.log,
         });
       } catch (err) {
         if (err instanceof TokenExchangeError && !err.retryable) {
@@ -397,6 +398,7 @@ export class App {
       apiKey: this.apiKey,
       fetchImpl: this.fetchImpl,
       rateLimiter: this.rateLimiter,
+      logger: this.log,
     });
 
     // Seed the local-sync projection (read replica) before live events start flowing, so

@@ -6,6 +6,9 @@
  * by calling this again with the API key. The API key is the single durable credential.
  */
 
+import { redactString } from "../logging/redact.js";
+import type { Logger } from "../logging/logger.js";
+
 export interface RealtimeTokenResponse {
   supabase_url: string;
   supabase_anon_key: string;
@@ -64,6 +67,12 @@ export interface ExchangeOptions {
   fetchImpl?: typeof fetch;
   /** Injectable clock (ms) for deterministic tests. */
   now?: () => number;
+  /** Logger for debug output. API keys are always redacted. */
+  logger?: Logger;
+}
+
+function redactApiKey(apiKey: string): string {
+  return redactString(apiKey);
 }
 
 /**
@@ -73,33 +82,110 @@ export interface ExchangeOptions {
 export async function exchangeToken(opts: ExchangeOptions): Promise<RealtimeToken> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
+  const logger = opts.logger;
   const url = `${opts.endpoint.replace(/\/+$/, "")}/realtime-token`;
 
+  // Log the start of token exchange (with redacted key preview)
+  if (logger?.isEnabled("debug")) {
+    const redacted = redactApiKey(opts.apiKey);
+    const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+    logger.debug("auth.token_exchange_start", { url, apiKeyUsed: preview });
+  }
+
   let res: Response;
+  const startTime = Date.now();
   try {
     res = await fetchImpl(url, {
       method: "POST",
       headers: { authorization: `Bearer ${opts.apiKey}` },
     });
   } catch (err) {
+    const duration = Date.now() - startTime;
+    if (logger?.isEnabled("debug")) {
+      const redacted = redactApiKey(opts.apiKey);
+      const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+      logger.debug("auth.token_exchange_failed", {
+        url,
+        status: undefined,
+        error: "network",
+        durationMs: duration,
+        apiKeyUsed: preview,
+      });
+    }
     throw new TokenExchangeError("network", `Token request failed: ${(err as Error).message}`);
   }
+  const duration = Date.now() - startTime;
 
   if (res.status === 401) {
+    if (logger?.isEnabled("debug")) {
+      const redacted = redactApiKey(opts.apiKey);
+      const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+      logger.debug("auth.token_exchange_failed", {
+        url,
+        status: 401,
+        error: "unauthorized",
+        durationMs: duration,
+        apiKeyUsed: preview,
+      });
+    }
     throw new TokenExchangeError("unauthorized", "API key rejected (401).", 401);
   }
   if (res.status === 429) {
+    if (logger?.isEnabled("debug")) {
+      const redacted = redactApiKey(opts.apiKey);
+      const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+      logger.debug("auth.token_exchange_failed", {
+        url,
+        status: 429,
+        error: "rate_limited",
+        durationMs: duration,
+        apiKeyUsed: preview,
+      });
+    }
     throw new TokenExchangeError("rate_limited", "Token endpoint rate limited (429).", 429);
   }
   if (res.status >= 500) {
+    if (logger?.isEnabled("debug")) {
+      const redacted = redactApiKey(opts.apiKey);
+      const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+      logger.debug("auth.token_exchange_failed", {
+        url,
+        status: res.status,
+        error: "server",
+        durationMs: duration,
+        apiKeyUsed: preview,
+      });
+    }
     throw new TokenExchangeError("server", `Token endpoint error (${res.status}).`, res.status);
   }
   if (!res.ok) {
+    if (logger?.isEnabled("debug")) {
+      const redacted = redactApiKey(opts.apiKey);
+      const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+      logger.debug("auth.token_exchange_failed", {
+        url,
+        status: res.status,
+        error: "malformed",
+        durationMs: duration,
+        apiKeyUsed: preview,
+      });
+    }
     throw new TokenExchangeError(
       "malformed",
       `Unexpected token endpoint status ${res.status}.`,
       res.status,
     );
+  }
+
+  if (logger?.isEnabled("debug")) {
+    const redacted = redactApiKey(opts.apiKey);
+    const preview = redacted.startsWith("pb_***") ? "pb_***" : redacted;
+    logger.debug("auth.token_exchange_done", {
+      url,
+      status: res.status,
+      durationMs: duration,
+      apiKeyUsed: preview,
+    });
   }
 
   let body: Partial<RealtimeTokenResponse>;

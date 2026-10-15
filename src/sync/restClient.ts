@@ -15,6 +15,8 @@
  */
 
 import { RateLimiter, type RateLimiterOptions } from "../util/rateLimiter.js";
+import { redactString } from "../logging/redact.js";
+import type { Logger } from "../logging/logger.js";
 
 export type RestErrorKind = "unauthorized" | "rate_limited" | "server" | "network" | "malformed";
 
@@ -46,6 +48,10 @@ export interface RestClientOptions {
    * or override minIntervalMs here to change the throttle rate.
    */
   rateLimiter?: RateLimiter | RateLimiterOptions;
+  /**
+   * Logger for debug output (URL, method, status). API keys are always redacted.
+   */
+  logger?: Logger;
 }
 
 /** A full chapter as returned by GET /chapters/{id}. */
@@ -119,6 +125,7 @@ export class RestClient {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly limiter: RateLimiter;
+  private readonly logger?: Logger;
 
   constructor(opts: RestClientOptions) {
     this.base = opts.endpoint.replace(/\/+$/, "");
@@ -128,6 +135,42 @@ export class RestClient {
       opts.rateLimiter instanceof RateLimiter
         ? opts.rateLimiter
         : new RateLimiter(opts.rateLimiter);
+    this.logger = opts.logger;
+  }
+
+  /**
+   * Log a REST API call (only in debug/verbose mode). API keys are always redacted.
+   */
+  private logRequest(
+    method: string,
+    path: string,
+    status: number | undefined,
+    durationMs: number,
+    errorKind?: RestErrorKind,
+  ): void {
+    if (!this.logger || !this.logger.isEnabled("debug")) return;
+
+    const redactedKey = redactString(this.apiKey);
+    const apiKeyPreview = redactedKey.startsWith("pb_***") ? "pb_***" : redactedKey;
+
+    if (errorKind) {
+      this.logger.debug("rest.request_failed", {
+        method,
+        path,
+        status,
+        error: errorKind,
+        durationMs,
+        apiKeyUsed: apiKeyPreview,
+      });
+    } else {
+      this.logger.debug("rest.request", {
+        method,
+        path,
+        status,
+        durationMs,
+        apiKeyUsed: apiKeyPreview,
+      });
+    }
   }
 
   async listChapters(): Promise<ApiChapterSummary[]> {
@@ -202,6 +245,7 @@ export class RestClient {
    */
   async deleteReq(path: string): Promise<void> {
     const url = `${this.base}${path}`;
+    const startTime = Date.now();
     await this.limiter.throttle();
     let res: Response;
     try {
@@ -210,7 +254,16 @@ export class RestClient {
         headers: { authorization: `Bearer ${this.apiKey}`, accept: "application/json" },
       });
     } catch (err) {
+      const duration = Date.now() - startTime;
+      this.logRequest("DELETE", path, undefined, duration, "network");
       throw new RestError("network", `DELETE ${path} failed: ${(err as Error).message}`);
+    }
+    const duration = Date.now() - startTime;
+    this.logRequest("DELETE", path, res.status, duration);
+
+    // Some endpoints return 204 No Content.
+    if (res.status === 204 || res.headers.get("content-length") === "0") {
+      return;
     }
     this.checkStatus("DELETE", path, res);
   }
@@ -221,6 +274,7 @@ export class RestClient {
     body: Record<string, unknown>,
   ): Promise<T> {
     const url = `${this.base}${path}`;
+    const startTime = Date.now();
     await this.limiter.throttle();
     let res: Response;
     try {
@@ -234,9 +288,13 @@ export class RestClient {
         body: JSON.stringify(body),
       });
     } catch (err) {
+      const duration = Date.now() - startTime;
+      this.logRequest(method, path, undefined, duration, "network");
       throw new RestError("network", `${method} ${path} failed: ${(err as Error).message}`);
     }
-    this.checkStatus(method, path, res);
+    const duration = Date.now() - startTime;
+    this.logRequest(method, path, res.status, duration);
+
     // Some endpoints return 204 No Content (e.g. DELETE-equivalent actions).
     if (res.status === 204 || res.headers.get("content-length") === "0") {
       return undefined as unknown as T;
@@ -260,6 +318,7 @@ export class RestClient {
 
   private async getJson<T>(path: string): Promise<T> {
     const url = `${this.base}${path}`;
+    const startTime = Date.now();
     await this.limiter.throttle();
     let res: Response;
     try {
@@ -268,8 +327,12 @@ export class RestClient {
         headers: { authorization: `Bearer ${this.apiKey}`, accept: "application/json" },
       });
     } catch (err) {
+      const duration = Date.now() - startTime;
+      this.logRequest("GET", path, undefined, duration, "network");
       throw new RestError("network", `GET ${path} failed: ${(err as Error).message}`);
     }
+    const duration = Date.now() - startTime;
+    this.logRequest("GET", path, res.status, duration);
 
     if (res.status === 401) throw new RestError("unauthorized", `GET ${path}: API key rejected (401).`, 401);
     if (res.status === 429) {
