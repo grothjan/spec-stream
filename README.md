@@ -375,6 +375,14 @@ finishes, before a deploy, or on demand:
 npx @proophboard/spec-stream sync-back
 ```
 
+By default, `sync-back` runs pre-sync checks before pushing: **model validation**, **typecheck**
+on all play functions, and **scenario tests** for all chapters. These checks help catch errors
+early, but can be skipped if you're confident in your local changes:
+
+```sh
+npx @proophboard/spec-stream sync-back --omit-checks
+```
+
 Preview what would be synced without making any changes:
 
 ```sh

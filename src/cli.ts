@@ -231,6 +231,7 @@ async function cmdSyncBack(opts: CliOptions): Promise<void> {
       configPath: opts.configPath,
       dryRun: opts.dryRun,
       verbose: opts.verbose,
+      omitChecks: opts.omitChecks,
     });
     if (result.failed > 0) {
       process.exit(1);

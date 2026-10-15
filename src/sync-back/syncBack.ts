@@ -22,6 +22,7 @@ import { RestClient } from "../sync/restClient.js";
 import { computeManifestDiff, computeDiskHash } from "./manifestDiff.js";
 import { buildOperations } from "./operationBuilder.js";
 import { executeOperations } from "./executor.js";
+import type { Scenario } from "@proophboard/exploration-runtime";
 import {
   loadManifest,
   saveManifest,
@@ -45,6 +46,8 @@ export interface SyncBackOptions {
   cwd?: string;
   /** Override fetch implementation (for testing). */
   fetchImpl?: typeof fetch;
+  /** When true, skip pre-sync validation/typecheck/scenario-test checks. */
+  omitChecks?: boolean;
 }
 
 export interface SyncBackResult {
@@ -104,6 +107,13 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
   const syncDirAbs = resolve(cwd, syncDir);
 
   debug(`Sync root: ${syncDirAbs}`);
+
+  // ─── Pre-sync checks (unless omitted) ─────────────────────────────────────
+  if (!opts.omitChecks) {
+    await runPreSyncChecks(syncDirAbs, { verbose, log, dryRun });
+  } else {
+    debug("Skipping pre-sync checks (--omit-checks)");
+  }
 
   // ─── API key ─────────────────────────────────────────────────────────────
   let apiKey: string;
@@ -279,6 +289,128 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
     failed: execResult.failed,
     errors: execResult.errors,
   };
+}
+
+// ─── Pre-sync checks ──────────────────────────────────────────────────────────
+
+/**
+ * Run all pre-sync checks: validate, typecheck, and scenario test.
+ * Throws on any failure.
+ */
+async function runPreSyncChecks(
+  syncRootAbs: string,
+  ctx: { verbose: boolean; log: (msg: string) => void; dryRun: boolean }
+): Promise<void> {
+  const { verbose, log, dryRun } = ctx;
+
+  // ─── 1. Model validation ──────────────────────────────────────────────────
+  log(`${dryRun ? "[dry-run] " : ""}Running model validation...`);
+  const validateResult = import("./validate.js").then(({ validateModel }) =>
+    validateModel({ syncRootAbs, verbose })
+  );
+  if ((await validateResult).issues.length > 0) {
+    throw new Error("Model validation failed. Fix issues before syncing back.");
+  }
+  log(`  ✓ ${(await validateResult).checked} file(s) checked — no issues found.`);
+
+  // ─── 2. Typecheck ─────────────────────────────────────────────────────────
+  log(`${dryRun ? "[dry-run] " : ""}Running typecheck on play functions...`);
+  const { typecheckChapter } = await import("./../scenario/typecheck.js");
+  const { loadChapterFromDisk } = await import("./../scenario/loadChapter.js");
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const chaptersRoot = join(syncRootAbs, "chapters");
+  
+  let hasTypeErrors = false;
+  let chaptersDirs: string[] = [];
+  try {
+    chaptersDirs = await readdir(chaptersRoot);
+    for (const dirName of chaptersDirs) {
+      const chapterDir = join(chaptersRoot, dirName);
+      const chapterJsonPath = join(chapterDir, "chapter.json");
+      if (!existsSync(chapterJsonPath)) continue;
+
+      try {
+        const chapter = await loadChapterFromDisk(chapterDir);
+        const diags = await typecheckChapter(chapter);
+        if (diags.length > 0) {
+          hasTypeErrors = true;
+          for (const d of diags) {
+            log(`  ✗ ${d.elementName} (${d.elementId})`);
+            log(`    [${d.kind}] ${d.line}:${d.col}  TS${d.code}: ${d.message}`);
+          }
+        }
+      } catch (err) {
+        hasTypeErrors = true;
+        log(`  ✗ Error loading chapter ${dirName}: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    hasTypeErrors = true;
+    log(`  ✗ Error scanning chapters: ${(err as Error).message}`);
+  }
+  if (hasTypeErrors) {
+    throw new Error("Typecheck failed. Fix type errors before syncing back.");
+  }
+  log(`  ✓ No type errors found.`);
+
+  // ─── 3. Scenario test ─────────────────────────────────────────────────────
+  log(`${dryRun ? "[dry-run] " : ""}Running scenario tests...`);
+  const { runAllScenarios } = await import("@proophboard/exploration-runtime");
+  const { transpileHandlers } = await import("./../scenario/transpile.js");
+  const { loadScenarioFromDisk } = await import("./../scenario/loadScenario.js");
+
+  let hasBroken = false;
+  let neutralCount = 0;
+  let scenarioCount = 0;
+  try {
+    for (const dirName of chaptersDirs) {
+      const chapterDir = join(chaptersRoot, dirName);
+      const chapterJsonPath = join(chapterDir, "chapter.json");
+      if (!existsSync(chapterJsonPath)) continue;
+
+      try {
+        const chapter = await loadChapterFromDisk(chapterDir);
+        const scenariosDir = join(chapterDir, "scenarios");
+        if (!existsSync(scenariosDir)) continue;
+
+        const scenarioDirs = await readdir(scenariosDir);
+        const scenarios: Scenario[] = [];
+
+        for (const sDir of scenarioDirs) {
+          const sPath = join(scenariosDir, sDir, "scenario.json");
+          if (!existsSync(sPath)) continue;
+
+          const scenario = await loadScenarioFromDisk(sPath.replace("/scenario.json", ""));
+          scenarios.push(scenario);
+        }
+
+        if (scenarios.length > 0) {
+          const { handlers } = await transpileHandlers(chapter);
+          const results = runAllScenarios(chapter, scenarios, handlers);
+          scenarioCount += results.length;
+
+          for (const r of results) {
+            if (r.status === "broken") hasBroken = true;
+            else if (r.status === "neutral") neutralCount++;
+          }
+        }
+      } catch (err) {
+        log(`  ✗ Error loading chapter ${dirName}: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    log(`  ✗ Error scanning scenarios: ${(err as Error).message}`);
+    hasBroken = true;
+  }
+
+  if (hasBroken) {
+    throw new Error("Scenario tests failed. Fix broken expectations before syncing back.");
+  }
+  if (neutralCount > 0) {
+    log(`  ${neutralCount} scenario(s) with no pinned expectations.`);
+  }
+  log(`  ${scenarioCount} scenario(s) checked.`);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
