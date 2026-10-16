@@ -29,6 +29,7 @@ import { applyEvent } from "./reducer.js";
 import { render } from "./render.js";
 import { writeTree, type WriteResult } from "./writer.js";
 import { seedModel } from "./seed.js";
+import { loadFromDisk } from "./loader.js";
 import type { RestClient } from "./restClient.js";
 import { buildManifestFromTree, saveManifest, syncManifestPath } from "../sync-back/manifest.js";
 
@@ -124,30 +125,85 @@ export class Projection {
   }
 
   /**
-   * Seed the model from the REST API and write the full tree once. Always safe to call —
-   * the tree is a replica. Returns the write result for logging.
+   * Check if a valid local model exists (sync-state.json present and valid).
+   */
+  hasValidLocalModel(): boolean {
+    const state = this.readSyncState();
+    if (!state) return false;
+    // Also verify the model files exist (at least workspace.json)
+    const workspacePath = join(this.dir, "workspace.json");
+    return existsSync(workspacePath);
+  }
+
+  /**
+   * Seed the model from the REST API or from disk, and write the full tree once.
+   * Returns the write result for logging.
+   *
+   * Behavior:
+   * - If rebuildOnStart is true: always fetch from REST
+   * - If sync-state.json exists and is valid: load from disk (skip REST)
+   * - Otherwise: fetch from REST (first run)
    *
    * REST returns current authoritative state, so a cold-start seed is itself a complete
    * catch-up (no changelog gap can be missed). The persisted cursor is carried forward as
    * the startup watermark (see {@link startupWatermark}) so the first reconnect's `since`
    * is well-defined even before any live event arrives.
    */
-  async seed(): Promise<WriteResult> {
-    const prior = this.startupWatermark();
-    this.log.info("sync.seed_start", {
-      dir: this.dir,
-      rebuild: this.opts.rebuildOnStart ?? false,
-      resumedFromCursor: prior !== undefined,
-    });
-    this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
-    // Preserve the prior cursor so the post-seed write doesn't reset the watermark to empty.
-    if (prior !== undefined) {
-      const existing = this.readSyncState();
-      this.pendingCursor = {
-        lastEventId: existing?.cursor.lastEventId,
-        lastCreatedAt: prior,
-      };
+  async seed(rebuild: boolean = this.opts.rebuildOnStart ?? false): Promise<WriteResult> {
+    // If rebuild is requested, always fetch from REST
+    if (rebuild) {
+      this.log.info("sync.seed_start", {
+        dir: this.dir,
+        rebuild: true,
+        resumedFromCursor: false,
+      });
+      this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
+      this.pendingCursor = {};
+    } else {
+      // Check if we have a valid local model
+      const prior = this.startupWatermark();
+      this.log.info("sync.seed_start", {
+        dir: this.dir,
+        rebuild: false,
+        resumedFromCursor: prior !== undefined,
+      });
+      
+      if (this.hasValidLocalModel()) {
+        // Load from disk instead of REST
+        const loaded = loadFromDisk(this.dir, this.opts.workspaceId, this.opts.workspaceName);
+        if (loaded) {
+          this.state = loaded;
+          // Preserve the prior cursor
+          if (prior !== undefined) {
+            this.pendingCursor = {
+              lastEventId: this.readSyncState()?.cursor.lastEventId,
+              lastCreatedAt: prior,
+            };
+          }
+        } else {
+          // Fallback: fetch from REST if disk load fails
+          this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
+          if (prior !== undefined) {
+            const existing = this.readSyncState();
+            this.pendingCursor = {
+              lastEventId: existing?.cursor.lastEventId,
+              lastCreatedAt: prior,
+            };
+          }
+        }
+      } else {
+        // No local model - fetch from REST (first run)
+        this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
+        if (prior !== undefined) {
+          const existing = this.readSyncState();
+          this.pendingCursor = {
+            lastEventId: existing?.cursor.lastEventId,
+            lastCreatedAt: prior,
+          };
+        }
+      }
     }
+    
     const result = this.flushWrite();
     this.seeded = true;
     this.log.info("sync.seed_done", {

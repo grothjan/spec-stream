@@ -37,6 +37,8 @@ export interface CliOptions {
   playhead?: number;
   /** --omit-checks: skip pre-sync validation/typecheck/scenario-test checks (sync-back only). */
   omitChecks: boolean;
+  /** --rebuild: force a full rebuild of the local model (run/sync-back only). */
+  rebuild: boolean;
   /** Parse error message, if any (caller prints and exits non-zero). */
   error?: string;
 }
@@ -55,6 +57,7 @@ const DEFAULTS: CliOptions = {
   userMode: false,
   force: false,
   omitChecks: false,
+  rebuild: false,
 };
 
 /** Parse argv (without node + script, i.e. process.argv.slice(2)). */
@@ -197,6 +200,9 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--omit-checks":
         opts.omitChecks = true;
         break;
+      case "--rebuild":
+        opts.rebuild = true;
+        break;
       default:
         return { ...opts, error: `Unknown option "${arg}"` };
     }
@@ -249,6 +255,7 @@ Options:
       --all                  Run/test all scenarios. If --chapter is provided, only scenarios from that chapter; otherwise all scenarios from all chapters
       --playhead <n>         Stop fold at step n (scenario run only)
       --omit-checks          Skip pre-sync validation/typecheck/scenario-test checks (sync-back only)
+      --rebuild              Force a full rebuild of the local model (run only)
   -v, --verbose              Debug logging
   -q, --quiet                Warnings and errors only
   -h, --help                 Show this help

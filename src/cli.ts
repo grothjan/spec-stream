@@ -160,6 +160,7 @@ function cmdStart(pidFile: PidFile, logFile: string, opts: CliOptions): void {
   if (opts.dryRun) passthrough.push("--dry-run");
   if (opts.verbose) passthrough.push("--verbose");
   if (opts.quiet) passthrough.push("--quiet");
+  if (opts.rebuild) passthrough.push("--rebuild");
 
   const scriptPath = fileURLToPath(import.meta.url);
   const { pid } = daemonize({ args: passthrough, logFile, scriptPath });
@@ -195,7 +196,7 @@ async function cmdRun(
     terminal: isTty,
   });
 
-  const app = new App({ config, apiKey, logger, dryRun: opts.dryRun });
+  const app = new App({ config, apiKey, logger, dryRun: opts.dryRun, rebuild: opts.rebuild });
 
   // If launched detached, we own the PID file for our own lifetime.
   const ownsPidFile = opts.detach || pidFile.read() === process.pid;

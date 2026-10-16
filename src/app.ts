@@ -45,6 +45,11 @@ export interface AppOptions {
    * Defaults to 80 ms in production.
    */
   reorderWindowMs?: number;
+  /**
+   * Force rebuild the local model from REST API, ignoring any existing local state.
+   * Defaults to false (use local model if available).
+   */
+  rebuild?: boolean;
 }
 
 export class App {
@@ -52,6 +57,7 @@ export class App {
   private readonly apiKey: string;
   private readonly log: Logger;
   private readonly dryRun: boolean;
+  private readonly rebuild: boolean;
   private router: Router;
   private self: SelfIdentity = {};
   private readonly scheduler: Scheduler;
@@ -97,6 +103,7 @@ export class App {
         : opts.writeOutput;
     this.rateLimiter = opts.rateLimiter;
     this.reorderWindowMs = opts.reorderWindowMs;
+    this.rebuild = opts.rebuild ?? false;
     this.router = Router.fromConfig(this.config);
     this.scheduler = new Scheduler({
       maxConcurrent: this.config.maxConcurrent,
@@ -417,7 +424,7 @@ export class App {
         git: this.config.localSync.git,
       });
       try {
-        await this.projection.seed();
+        await this.projection.seed(this.rebuild);
         // Carry the persisted cursor into the in-memory catch-up watermark so a reconnect
         // that happens before any live event still replays from the last synced position.
         const resumed = this.projection.startupWatermark();
