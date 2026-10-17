@@ -364,6 +364,21 @@ export class Projection {
     writeFileSync(this.statePath, JSON.stringify(state, null, 2) + "\n", "utf8");
   }
 
+  /** Force an immediate cursor-only write to sync-state.json. */
+  flushCursor(): void {
+    if (this.pendingCursor.lastEventId || this.pendingCursor.lastCreatedAt) {
+      const existing = this.readSyncState();
+      if (!existing || existing.cursor.lastEventId !== this.pendingCursor.lastEventId || existing.cursor.lastCreatedAt !== this.pendingCursor.lastCreatedAt) {
+        this.persistCursor();
+      }
+    }
+  }
+
+  /** Update the pending cursor (for use after catch-up). */
+  updateCursor(eventId: string | undefined, createdAt: string | undefined): void {
+    this.pendingCursor = { lastEventId: eventId, lastCreatedAt: createdAt };
+  }
+
   private gitCommit(result: WriteResult): void {
     const msgParts: string[] = [`spec-stream sync: +${result.created} ~${result.updated} -${result.deleted}`];
     

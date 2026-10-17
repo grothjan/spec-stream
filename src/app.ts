@@ -77,6 +77,8 @@ export class App {
   private reorderBuffer?: ReorderBuffer;
   /** ISO timestamp of the last event we processed (for reconnect catch-up). */
   private lastEventCreatedAt?: string;
+  /** ID of the last event we processed (to exclude it from catch-up replay). */
+  private lastEventId?: string;
   /** Recent event ids, to dedupe the boundary overlap when replaying the gap. */
   private recentEventIds = new Set<string>();
   /** True once we've had our first successful subscribe (so later ones are reconnects). */
@@ -175,9 +177,13 @@ export class App {
 
     this.stats.received++;
     this.stats.lastEventAt = Date.now();
-    // Track the newest event timestamp as the catch-up watermark.
+    // Track the newest event timestamp and ID as the catch-up watermark.
     if (!this.lastEventCreatedAt || event.createdAt > this.lastEventCreatedAt) {
       this.lastEventCreatedAt = event.createdAt;
+      this.lastEventId = event.id;
+    } else if (event.createdAt === this.lastEventCreatedAt && event.id !== this.lastEventId) {
+      // Same timestamp but different event - keep the newer one (by ID)
+      this.lastEventId = event.id;
     }
     this.log.info("event.received", {
       eventType: event.type,
@@ -252,6 +258,8 @@ export class App {
     try {
       const rows = await this.rest.fetchChangelogSince(since);
       let replayed = 0;
+      let latestEventId = this.lastEventId;
+      let latestCreatedAt = since;
       for (const raw of rows) {
         const row: ChangelogEventRow = {
           id: raw.id,
@@ -271,9 +279,29 @@ export class App {
           continue; // skip malformed rows
         }
         if (this.recentEventIds.has(event.id)) continue; // already processed live
+        // Skip the event that matches the cursor's lastEventId - this is the one we already processed.
+        // The API returns events >= since, so there may be multiple events at the same timestamp
+        // (race conditions), but we only want to skip the exact event that was at the cursor.
+        if (event.id === this.lastEventId) {
+          this.log.debug("event.boundary_skip", { eventId: event.id, createdAt: event.createdAt });
+          continue;
+        }
+        // Skip events that are strictly before the cursor timestamp (shouldn't happen with >= since, but be safe)
+        if (this.lastEventCreatedAt && event.createdAt < this.lastEventCreatedAt) {
+          this.log.debug("event.skip_before_cursor", { eventId: event.id, createdAt: event.createdAt, cursor: this.lastEventCreatedAt });
+          continue;
+        }
         this.onEvent(event);
         replayed++;
+        // Track the latest event for the next catch-up watermark
+        if (!latestCreatedAt || event.createdAt > latestCreatedAt) {
+          latestCreatedAt = event.createdAt;
+        }
+        latestEventId = event.id;
       }
+      // Update watermark to the latest processed event
+      this.lastEventId = latestEventId;
+      this.lastEventCreatedAt = latestCreatedAt;
       this.log.info("conn.catchup", { since, fetched: rows.length, replayed });
     } catch (err) {
       if (err instanceof RestError && err.kind === "rate_limited") {
@@ -295,6 +323,16 @@ export class App {
       }
     } finally {
       this.catchingUp = false;
+      // Persist the updated cursor after catch-up, so it's immediately available
+      // on restart (no need to wait for the debounced write).
+      if (this.projection && (this.lastEventId || this.lastEventCreatedAt)) {
+        try {
+          this.projection.updateCursor(this.lastEventId, this.lastEventCreatedAt);
+          this.projection.flushCursor();
+        } catch (err) {
+          this.log.warn("sync.flush_cursor_failed", { message: (err as Error).message });
+        }
+      }
     }
   }
 
@@ -303,8 +341,12 @@ export class App {
     this.log.info("conn.state", { status, error: err?.message });
     if (status !== "SUBSCRIBED") return;
     if (!this.hasSubscribed) {
-      // First subscribe after startup — seed already established initial state.
+      // First subscribe after startup: if we loaded from a persisted cursor, catch up now
+      // (the local model was resumed from disk, but we may have missed events since then).
       this.hasSubscribed = true;
+      if (this.lastEventCreatedAt) {
+        void this.catchUp();
+      }
       return;
     }
     // A re-subscribe after a drop: replay the gap.
@@ -427,10 +469,11 @@ export class App {
         await this.projection.seed(this.rebuild);
         // Carry the persisted cursor into the in-memory catch-up watermark so a reconnect
         // that happens before any live event still replays from the last synced position.
-        const resumed = this.projection.startupWatermark();
-        if (resumed) {
-          this.lastEventCreatedAt = resumed;
-          this.log.info("sync.resumed", { since: resumed });
+        const state = this.projection.readSyncState();
+        if (state && state.cursor.lastCreatedAt) {
+          this.lastEventCreatedAt = state.cursor.lastCreatedAt;
+          this.lastEventId = state.cursor.lastEventId;
+          this.log.info("sync.resumed", { since: state.cursor.lastCreatedAt, eventId: this.lastEventId });
         }
       } catch (err) {
         // Seeding failure is non-fatal: log and continue. Live events will still apply,
