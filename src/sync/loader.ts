@@ -63,6 +63,8 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
     const workspace = JSON.parse(readFileSync(workspacePath, "utf8")) as { id: string; name: string };
     // workspaceId is already set from constructor, verify it matches
     if (workspace.id !== workspaceId) return undefined;
+    // Use the name from disk (not the constructor parameter) for consistency
+    state.workspaceName = workspace.name;
   } catch {
     return undefined;
   }
@@ -101,18 +103,20 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
               context: chapter.context,
               index: chapter.index,
               mode: chapter.mode,
+              sliceOrder: chapter.sliceOrder,
+              laneOrder: chapter.laneOrder,
             },
           }),
         );
 
-        // Load slices
+        // Load slices in the order specified by chapter.sliceOrder (not filesystem order)
         const slicesDir = join(chaptersDir, chapterDir.name, "slices");
-        if (existsSync(slicesDir)) {
-          const sliceDirs = readdirSync(slicesDir, { withFileTypes: true }).filter((d) =>
-            d.isDirectory(),
-          );
-          for (const sliceDir of sliceDirs) {
-            const slicePath = join(slicesDir, sliceDir.name, "slice.json");
+        if (existsSync(slicesDir) && Array.isArray(chapter.sliceOrder)) {
+          // Load slices in the order from chapter.json's sliceOrder
+          for (const sliceId of chapter.sliceOrder) {
+            const sliceDir = join(slicesDir, sliceId);
+            if (!existsSync(sliceDir)) continue;
+            const slicePath = join(sliceDir, "slice.json");
             if (!existsSync(slicePath)) continue;
             try {
               const slice = JSON.parse(readFileSync(slicePath, "utf8")) as {
@@ -130,11 +134,11 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
                 timeSpent?: string;
               };
               // Read details.md
-              const detailsPath = join(slicesDir, sliceDir.name, "details.md");
+              const detailsPath = join(slicesDir, sliceId, "details.md");
               const details = existsSync(detailsPath) ? readFileSync(detailsPath, "utf8").trim() : "";
               
               // Load comments from comments/ subdirectory
-              const commentsPath = join(slicesDir, sliceDir.name, "comments");
+              const commentsPath = join(slicesDir, sliceId, "comments");
               const comments: { id: string; text: string; author?: string; userId?: string; createdAt?: string }[] = [];
               if (existsSync(commentsPath)) {
                 const commentDirs = readdirSync(commentsPath, { withFileTypes: true }).filter((d) =>
@@ -183,14 +187,14 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
           }
         }
 
-        // Load lanes
+        // Load lanes in the order specified by chapter.laneOrder (not filesystem order)
         const lanesDir = join(chaptersDir, chapterDir.name, "lanes");
-        if (existsSync(lanesDir)) {
-          const laneDirs = readdirSync(lanesDir, { withFileTypes: true }).filter((d) =>
-            d.isDirectory(),
-          );
-          for (const laneDir of laneDirs) {
-            const lanePath = join(lanesDir, laneDir.name, "lane.json");
+        if (existsSync(lanesDir) && Array.isArray(chapter.laneOrder)) {
+          // Load lanes in the order from chapter.json's laneOrder
+          for (const laneId of chapter.laneOrder) {
+            const laneDir = join(lanesDir, laneId);
+            if (!existsSync(laneDir)) continue;
+            const lanePath = join(laneDir, "lane.json");
             if (!existsSync(lanePath)) continue;
             try {
               const lane = JSON.parse(readFileSync(lanePath, "utf8")) as {
@@ -244,8 +248,18 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
               
               const description = existsSync(descriptionPath) ? readFileSync(descriptionPath, "utf8").trim() : "";
               const details = existsSync(detailsPath) ? readFileSync(detailsPath, "utf8").trim() : "";
+              // Strip "type Payload = " prefix if present (to handle corrupted files from earlier versions)
               const playFunction = existsSync(playFunctionPath) ? readFileSync(playFunctionPath, "utf8") : undefined;
-              const playType = existsSync(playTypePath) ? readFileSync(playTypePath, "utf8") : undefined;
+              const rawPlayType = existsSync(playTypePath) ? readFileSync(playTypePath, "utf8") : undefined;
+              // Strip the prefix if present; if it's already duplicated (corruption), strip both
+              let playType = rawPlayType;
+              if (playType?.startsWith("type Payload = ")) {
+                playType = playType.slice("type Payload = ".length);
+              }
+              // Strip again if there's another prefix (handles corrupted files with double prefix)
+              if (playType?.startsWith("type Payload = ")) {
+                playType = playType.slice("type Payload = ".length);
+              }
               
               // Load comments from comment files
               const comments: { id: string; text: string; author?: string; userId?: string; createdAt?: string }[] = [];
@@ -390,23 +404,28 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
   const snippetsDir = join(dir, "html-snippets");
   if (existsSync(snippetsDir)) {
     try {
-      const snippetFiles = readdirSync(snippetsDir, { withFileTypes: true }).filter((d) =>
-        d.isFile() && d.name.endsWith(".json"),
+      const snippetDirs = readdirSync(snippetsDir, { withFileTypes: true }).filter((d) =>
+        d.isDirectory() && d.name.startsWith("global-styles"),
       );
-      for (const snippetFile of snippetFiles) {
-        const snippetPath = join(snippetsDir, snippetFile.name);
-        try {
-          const snippetData = JSON.parse(readFileSync(snippetPath, "utf8")) as {
-            slug: string;
-            name: string;
-            snippet: string;
-            createdAt?: string;
-            updatedAt?: string;
-          };
-          applyEvent(state, synthEvent("html-snippet-added", null, { slug: snippetData.slug, newValue: { snippet: snippetData } }));
-        } catch {
-          // Skip malformed snippet
-          continue;
+      // Read the .html file for each directory
+      for (const snippetDir of snippetDirs) {
+        const htmlPath = join(snippetsDir, snippetDir.name, snippetDir.name + ".html");
+        if (existsSync(htmlPath)) {
+          try {
+            const htmlContent = readFileSync(htmlPath, "utf8");
+            const jsonPath = join(snippetsDir, snippetDir.name, snippetDir.name + ".json");
+            let snippetData: { slug: string; name: string; createdAt?: string; updatedAt?: string };
+            if (existsSync(jsonPath)) {
+              snippetData = JSON.parse(readFileSync(jsonPath, "utf8")) as { slug: string; name: string; createdAt?: string; updatedAt?: string };
+            } else {
+              // Fallback: derive from directory name
+              snippetData = { slug: snippetDir.name, name: snippetDir.name };
+            }
+            applyEvent(state, synthEvent("html-snippet-added", null, { slug: snippetData.slug, newValue: { snippet: htmlContent, name: snippetData.name } }));
+          } catch {
+            // Skip malformed snippet
+            continue;
+          }
         }
       }
     } catch {

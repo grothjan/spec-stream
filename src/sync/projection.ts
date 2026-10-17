@@ -27,7 +27,7 @@ import type { Logger } from "../logging/logger.js";
 import { type ModelState, emptyModel } from "./model.js";
 import { applyEvent } from "./reducer.js";
 import { render } from "./render.js";
-import { writeTree, type WriteResult } from "./writer.js";
+import { writeTree, type WriteResult, readIfExists } from "./writer.js";
 import { seedModel } from "./seed.js";
 import { loadFromDisk } from "./loader.js";
 import type { RestClient } from "./restClient.js";
@@ -156,17 +156,13 @@ export class Projection {
         dir: this.dir,
         rebuild: true,
         resumedFromCursor: false,
+        note: "Rebuilding model from REST API",
       });
       this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
       this.pendingCursor = {};
     } else {
       // Check if we have a valid local model
       const prior = this.startupWatermark();
-      this.log.info("sync.seed_start", {
-        dir: this.dir,
-        rebuild: false,
-        resumedFromCursor: prior !== undefined,
-      });
       
       if (this.hasValidLocalModel()) {
         // Load from disk instead of REST
@@ -180,8 +176,24 @@ export class Projection {
               lastCreatedAt: prior,
             };
           }
+          this.log.info("sync.seed_start", {
+            dir: this.dir,
+            rebuild: false,
+            resumedFromCursor: prior !== undefined,
+            chapters: this.state.chapters.size,
+            slices: this.state.slices.size,
+            elements: this.state.elements.size,
+            milestones: this.state.milestones.size,
+            note: "Loaded existing model from disk, resuming from cursor",
+          });
         } else {
           // Fallback: fetch from REST if disk load fails
+          this.log.info("sync.seed_start", {
+            dir: this.dir,
+            rebuild: false,
+            resumedFromCursor: prior !== undefined,
+            note: "Disk load failed, fetching from REST API",
+          });
           this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
           if (prior !== undefined) {
             const existing = this.readSyncState();
@@ -193,6 +205,12 @@ export class Projection {
         }
       } else {
         // No local model - fetch from REST (first run)
+        this.log.info("sync.seed_start", {
+          dir: this.dir,
+          rebuild: false,
+          resumedFromCursor: false,
+          note: "First run, fetching from REST API",
+        });
         this.state = await seedModel(this.client, this.opts.workspaceId, this.opts.workspaceName);
         if (prior !== undefined) {
           const existing = this.readSyncState();
@@ -212,6 +230,9 @@ export class Projection {
       elements: this.state.elements.size,
       milestones: this.state.milestones.size,
       ...result,
+      note: result.created + result.updated + result.deleted > 0 
+        ? `Tree updated: +${result.created} ~${result.updated} -${result.deleted} files` 
+        : "No changes, tree unchanged",
     });
     return result;
   }
@@ -249,25 +270,95 @@ export class Projection {
     const result = writeTree(this.dir, tree);
     this.appliedSinceWrite = 0;
 
-    // Advance the cursor only after a successful write pass.
-    this.persistCursor();
-
+    // Check if we need to update the sync state (cursor)
+    const needsStateUpdate = this.needsStateUpdate();
+    
     // Write sync-manifest.json so sync-back can determine create-vs-update without git.
-    // Failures are non-fatal — the model write already succeeded.
-    try {
-      const manifest = buildManifestFromTree(tree);
-      saveManifest(syncManifestPath(this.dir), manifest);
-    } catch (err) {
-      this.log.warn("sync.manifest_write_failed", { message: (err as Error).message });
+    // Only write if there were actual changes (manifest reflects the new tree state).
+    const needsManifestUpdate = result.created + result.updated + result.deleted > 0;
+    if (needsManifestUpdate) {
+      try {
+        const manifest = buildManifestFromTree(tree);
+        // Only write manifest if content actually changed (compare with existing)
+        const manifestPath = syncManifestPath(this.dir);
+        const existingManifest = readIfExists(manifestPath);
+        const newManifest = JSON.stringify(manifest, null, 2) + "\n";
+        if (existingManifest !== newManifest) {
+          saveManifest(manifestPath, manifest);
+        }
+      } catch (err) {
+        this.log.warn("sync.manifest_write_failed", { message: (err as Error).message });
+      }
     }
 
-    if (result.created + result.updated + result.deleted > 0) {
-      this.log.info("sync.write", { appliedEvents: applied, ...result });
+    // Only advance the cursor and write sync-state.json if there were changes
+    // OR if this is the initial seed (no prior state exists).
+    if (needsStateUpdate || !this.hasValidLocalModel()) {
+      // Check if sync-state content actually changed before writing
+      const syncStatePath = this.statePath;
+      const existingState = readIfExists(syncStatePath);
+      const newState: SyncState = {
+        workspaceId: this.opts.workspaceId,
+        cursor: this.pendingCursor,
+        schemaVersion: SCHEMA_VERSION,
+        syncedAt: new Date().toISOString(),
+      };
+      const newStateStr = JSON.stringify(newState, null, 2) + "\n";
+      if (existingState !== newStateStr) {
+        this.persistCursor();
+        result.byType.stateFiles++;
+      }
+    }
+
+    // Log meaningful writes (not just manifest/state rewrites on unchanged trees)
+    const meaningfulChange = result.changedFiles.some(
+      f => !f.endsWith("/sync-state.json") && !f.endsWith("sync-manifest.json")
+    );
+    
+    if (meaningfulChange || result.created + result.updated + result.deleted > 0) {
+      this.log.info("sync.write", { 
+        appliedEvents: applied,
+        created: result.created,
+        updated: result.updated,
+        deleted: result.deleted,
+        unchanged: result.unchanged,
+        byType: result.byType,
+        changedFiles: result.changedFiles,
+      });
+      // Verbose: log per-file diff detail so users can see exactly what changed and why
+      for (const diff of result.fileDiffs) {
+        this.log.debug("sync.write.file_diff", {
+          file: diff.file,
+          existingLen: diff.existingLen,
+          newLen: diff.newLen,
+          firstDiffAt: diff.firstDiffAt,
+          existingSnippet: diff.existingSnippet,
+          newSnippet: diff.newSnippet,
+        });
+      }
       if (this.git) this.gitCommit(result);
     } else {
       this.log.debug("sync.write_noop", { appliedEvents: applied });
     }
     return result;
+  }
+
+  /** Check if the sync state needs to be updated based on the pending cursor. */
+  private needsStateUpdate(): boolean {
+    const existing = this.readSyncState();
+    if (!existing) return true; // No existing state, need to write
+    
+    const pending = this.pendingCursor;
+    if (!pending.lastEventId && !pending.lastCreatedAt) return false; // Nothing new
+    
+    // Update if we have a newer event
+    if (pending.lastEventId && existing.cursor.lastEventId !== pending.lastEventId) {
+      return true;
+    }
+    if (pending.lastCreatedAt && existing.cursor.lastCreatedAt !== pending.lastCreatedAt) {
+      return true;
+    }
+    return false;
   }
 
   private persistCursor(): void {
@@ -282,7 +373,26 @@ export class Projection {
   }
 
   private gitCommit(result: WriteResult): void {
-    const message = `spec-stream sync: +${result.created} ~${result.updated} -${result.deleted}`;
+    const msgParts: string[] = [`spec-stream sync: +${result.created} ~${result.updated} -${result.deleted}`];
+    
+    // Add breakdown by type if there were changes
+    const byType = result.byType;
+    const typeChanges: string[] = [];
+    
+    if (byType.chapters > 0) typeChanges.push(`chapters:${byType.chapters}`);
+    if (byType.slices > 0) typeChanges.push(`slices:${byType.slices}`);
+    if (byType.lanes > 0) typeChanges.push(`lanes:${byType.lanes}`);
+    if (byType.elements > 0) typeChanges.push(`elements:${byType.elements}`);
+    if (byType.milestones > 0) typeChanges.push(`milestones:${byType.milestones}`);
+    if (byType.scenarios > 0) typeChanges.push(`scenarios:${byType.scenarios}`);
+    if (byType.htmlSnippets > 0) typeChanges.push(`snippets:${byType.htmlSnippets}`);
+    if (byType.contentFiles > 0) typeChanges.push(`content:${byType.contentFiles}`);
+    
+    if (typeChanges.length > 0) {
+      msgParts.push(typeChanges.join(" "));
+    }
+    
+    const message = msgParts.join(" ");
     try {
       (this.commit ?? defaultCommit)(this.dir, message);
     } catch (err) {

@@ -27,11 +27,38 @@ import {
 import { join, resolve, dirname, relative, sep } from "node:path";
 import type { DesiredTree } from "./render.js";
 
+/** Breakdown of what files were changed by type */
+export interface ChangeBreakdown {
+  chapters: number;
+  slices: number;
+  lanes: number;
+  elements: number;
+  milestones: number;
+  scenarios: number;
+  htmlSnippets: number;
+  contentFiles: number; // description.md, details.md, play-function.ts, play-type.ts
+  manifests: number;    // sync-manifest.json, sync-back-ids.json
+  stateFiles: number;   // sync-state.json
+  other: number;
+}
+
 export interface WriteResult {
   created: number;
   updated: number;
   deleted: number;
   unchanged: number;
+  /** Detailed breakdown of what was created/updated/deleted */
+  byType: ChangeBreakdown;
+  /**
+   * Files that were actually changed (created or updated). 
+   * Used to determine if a write pass had meaningful changes.
+   */
+  changedFiles: string[];
+  /**
+   * Per-file diff details for verbose logging.
+   * Only populated for updated files (not created/deleted).
+   */
+  fileDiffs: Array<{ file: string; existingLen: number; newLen: number; firstDiffAt: number; existingSnippet: string; newSnippet: string }>;
 }
 
 /**
@@ -42,9 +69,29 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
   const root = resolve(rootDir);
   mkdirSync(root, { recursive: true });
 
-  const result: WriteResult = { created: 0, updated: 0, deleted: 0, unchanged: 0 };
+  const result: WriteResult = { 
+    created: 0, 
+    updated: 0, 
+    deleted: 0, 
+    unchanged: 0,
+    byType: {
+      chapters: 0, slices: 0, lanes: 0, elements: 0,
+      milestones: 0, scenarios: 0, htmlSnippets: 0,
+      contentFiles: 0, manifests: 0, stateFiles: 0, other: 0,
+    },
+    changedFiles: [],
+    fileDiffs: [],
+  };
+
+  // Track files to delete (we'll do this after processing desired files to catch renames)
+  const existingFiles = new Set(listFiles(root));
+  const desiredPaths = new Set<string>();
 
   // Desired absolute paths, validated to stay within root.
+  // sync-state.json is managed separately by the projection (not by the renderer),
+  // so we must preserve it rather than let writeTree delete it as an "unknown" file.
+  const PRESERVED_FILES = new Set(["sync-state.json"]);
+
   const desired = new Map<string, string>();
   for (const [rel, content] of tree) {
     const abs = resolve(root, rel);
@@ -53,14 +100,21 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
       continue;
     }
     desired.set(abs, content);
+    desiredPaths.add(abs);
+    existingFiles.delete(abs); // This file is in the tree, don't delete it
+  }
+
+  // Also preserve special meta-files that are not in the rendered tree.
+  for (const name of PRESERVED_FILES) {
+    const abs = resolve(root, name);
+    existingFiles.delete(abs);
   }
 
   // 1. Delete files on disk that are not desired.
-  for (const abs of listFiles(root)) {
-    if (!desired.has(abs)) {
-      rmSync(abs, { force: true });
-      result.deleted++;
-    }
+  for (const abs of existingFiles) {
+    rmSync(abs, { force: true });
+    result.deleted++;
+    result.byType.other++; // deleted files tracked as "other"
   }
 
   // 2. Create/update desired files (diff-based).
@@ -72,14 +126,82 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
     }
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content, "utf8");
-    if (existing === undefined) result.created++;
-    else result.updated++;
+    
+    const rel = relative(root, abs);
+    if (existing === undefined) {
+      result.created++;
+      result.changedFiles.push(rel);
+      trackChangeByType(result.byType, rel);
+    } else {
+      result.updated++;
+      result.changedFiles.push(rel);
+      trackChangeByType(result.byType, rel);
+      // Record diff detail for verbose logging
+      let firstDiffAt = -1;
+      for (let i = 0; i < Math.min(existing.length, content.length); i++) {
+        if (existing[i] !== content[i]) { firstDiffAt = i; break; }
+      }
+      if (firstDiffAt === -1) firstDiffAt = Math.min(existing.length, content.length);
+      const snipStart = Math.max(0, firstDiffAt - 10);
+      result.fileDiffs.push({
+        file: rel,
+        existingLen: existing.length,
+        newLen: content.length,
+        firstDiffAt,
+        existingSnippet: existing.slice(snipStart, firstDiffAt + 20),
+        newSnippet: content.slice(snipStart, firstDiffAt + 20),
+      });
+    }
   }
 
   // 3. Prune empty directories (bottom-up), but keep root itself.
   pruneEmptyDirs(root, root);
 
   return result;
+}
+
+/** Categorize a file path into its type for the breakdown. */
+function trackChangeByType(byType: ChangeBreakdown, relPath: string): void {
+  // Sync files (special case - these are meta-files, not model files)
+  if (relPath === "sync-state.json" || relPath === "sync-manifest.json" || relPath === "sync-back-ids.json") {
+    byType.manifests++;
+    return;
+  }
+  if (relPath.startsWith("sync-state.json") || relPath.includes("/sync-state.json")) {
+    byType.stateFiles++;
+    return;
+  }
+
+  // Check for content files
+  const contentFilePatterns = [
+    /description\.md$/,
+    /details\.md$/,
+    /play-function\.ts$/,
+    /play-type\.ts$/,
+  ];
+  if (contentFilePatterns.some(p => p.test(relPath))) {
+    byType.contentFiles++;
+    return;
+  }
+
+  // Check for entity JSON files
+  if (relPath.includes("/chapter.json")) {
+    byType.chapters++;
+  } else if (relPath.includes("/slice.json")) {
+    byType.slices++;
+  } else if (relPath.includes("/lane.json")) {
+    byType.lanes++;
+  } else if (relPath.includes("/element.json")) {
+    byType.elements++;
+  } else if (relPath.includes("/milestone.json")) {
+    byType.milestones++;
+  } else if (relPath.includes("/scenario.json")) {
+    byType.scenarios++;
+  } else if (relPath.startsWith("html-snippets/") && relPath.endsWith(".json")) {
+    byType.htmlSnippets++;
+  } else {
+    byType.other++;
+  }
 }
 
 /** Recursively collect all file paths under `dir` (absolute). */
@@ -118,7 +240,7 @@ function pruneEmptyDirs(dir: string, keep: string): boolean {
   return empty && dir !== keep;
 }
 
-function readIfExists(abs: string): string | undefined {
+export function readIfExists(abs: string): string | undefined {
   try {
     if (!existsSync(abs) || !statSync(abs).isFile()) return undefined;
     return readFileSync(abs, "utf8");

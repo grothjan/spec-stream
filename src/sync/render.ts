@@ -396,8 +396,8 @@ function json(value: Record<string, unknown>): string {
   return JSON.stringify(clean, null, 2) + "\n";
 }
 
-/** Markdown file body with a trailing newline. */
+/** Markdown file body: trimmed, with a trailing newline. Empty stays empty. */
 function markdown(body: string): string {
-  const text = typeof body === "string" ? body : "";
+  const text = typeof body === "string" ? body.trim() : "";
   return text.length > 0 ? `${text}\n` : "";
 }
