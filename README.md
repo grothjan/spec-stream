@@ -164,10 +164,10 @@ event as JSON on **stdin**. See [`docs/command-context.md`](./docs/command-conte
 Foreground is the default (like `tail -f`). To run detached:
 
 ```bash
-spec-stream start      # start in the background (writes a PID file)
-spec-stream status     # is it running? connection + counters
-spec-stream logs -f    # follow the log
-spec-stream stop       # graceful stop (waits for running commands to finish)
+npx @proophboard/spec-stream start      # start in the background (writes a PID file)
+npx @proophboard/spec-stream status     # is it running? connection + counters
+npx @proophboard/spec-stream logs -f    # follow the log
+npx @proophboard/spec-stream stop       # graceful stop (waits for running commands to finish)
 ```
 
 For servers, run the foreground command under systemd/Docker and let the manager handle
@@ -324,6 +324,8 @@ Add a `localSync` block to your `proophboard.spec-stream.json`:
 On the next `spec-stream run` (or `start`), it fetches the full workspace via the REST
 API, writes the initial file tree, then applies every incoming changelog event
 incrementally. Restarts catch up on missed events automatically.
+
+*Use `npx @proophboard/spec-stream --verbose` to get a detailed list of file changes.*
 
 ### What gets written
 
