@@ -324,18 +324,10 @@ export class Projection {
         unchanged: result.unchanged,
         byType: result.byType,
         changedFiles: result.changedFiles,
+        filesAdded: result.filesAdded,
+        filesModified: result.filesModified,
+        filesDeleted: result.filesDeleted,
       });
-      // Verbose: log per-file diff detail so users can see exactly what changed and why
-      for (const diff of result.fileDiffs) {
-        this.log.debug("sync.write.file_diff", {
-          file: diff.file,
-          existingLen: diff.existingLen,
-          newLen: diff.newLen,
-          firstDiffAt: diff.firstDiffAt,
-          existingSnippet: diff.existingSnippet,
-          newSnippet: diff.newSnippet,
-        });
-      }
       if (this.git) this.gitCommit(result);
     } else {
       this.log.debug("sync.write_noop", { appliedEvents: applied });

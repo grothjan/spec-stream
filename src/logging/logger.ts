@@ -103,8 +103,14 @@ export class Logger {
 /** JSONL sink: one redacted JSON object per line, via an injected line-writer. */
 export class JsonlSink implements Sink {
   constructor(private readonly writeLine: (line: string) => void) {}
+
   write(record: LogRecord): void {
-    this.writeLine(JSON.stringify(record));
+    // Strip verbose-only fields from JSONL output (they go to pretty sink only)
+    const cleanRecord: LogRecord = { ...record };
+    delete (cleanRecord as any).filesAdded;
+    delete (cleanRecord as any).filesModified;
+    delete (cleanRecord as any).filesDeleted;
+    this.writeLine(JSON.stringify(cleanRecord));
   }
 }
 
@@ -165,7 +171,7 @@ function formatVal(v: unknown): string {
  * Supports multi-line output for complex structured data (like sync logs).
  * Returns an array of lines for split writes.
  */
-export function formatLogRecord(record: LogRecord, color: boolean): string[] {
+export function formatLogRecord(record: LogRecord, color: boolean, verbose: boolean = false): string[] {
   const { ts, level, kind, msg, ...rest } = record;
   const time = formatTime(ts);
   const label = LEVEL_LABEL[level];
@@ -178,6 +184,10 @@ export function formatLogRecord(record: LogRecord, color: boolean): string[] {
   if (msg) parts.push(String(msg));
   for (const [k, v] of Object.entries(rest)) {
     if (v === undefined || v === null) continue;
+    // Skip verbose-only fields (always skipped in terminal output)
+    if (k === "filesAdded" || k === "filesModified" || k === "filesDeleted") {
+      continue;
+    }
     // Special handling for structured fields like byType and changedFiles
     if (k === "byType" && typeof v === "object") {
       const byType = v as Record<string, number>;
@@ -231,6 +241,40 @@ export function formatLogRecord(record: LogRecord, color: boolean): string[] {
     if (Number(rest.unchanged) > 0) counts.push(`.${rest.unchanged}`);
     if (counts.length > 0) {
       output.push(`    files: ${counts.join(" ")}`);
+    }
+  }
+
+  // Verbose: show git-style file list (A/M/D) only when verbose is true
+  if (verbose) {
+    const fileLines: string[] = [];
+    
+    // Show created files as A (added)
+    if (rest.filesAdded && Array.isArray(rest.filesAdded)) {
+      const filesAdded = rest.filesAdded as string[];
+      for (const file of filesAdded) {
+        fileLines.push(`    A ${file}`);
+      }
+    }
+    
+    // Show modified files as M
+    if (rest.filesModified && Array.isArray(rest.filesModified)) {
+      const filesModified = rest.filesModified as string[];
+      for (const file of filesModified) {
+        fileLines.push(`    M ${file}`);
+      }
+    }
+    
+    // Show deleted files as D
+    if (rest.filesDeleted && Array.isArray(rest.filesDeleted)) {
+      const filesDeleted = rest.filesDeleted as string[];
+      for (const file of filesDeleted) {
+        fileLines.push(`    D ${file}`);
+      }
+    }
+    
+    if (fileLines.length > 0) {
+      output.push("    files:");
+      output.push(...fileLines);
     }
   }
 

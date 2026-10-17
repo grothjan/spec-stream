@@ -55,10 +55,11 @@ export interface WriteResult {
    */
   changedFiles: string[];
   /**
-   * Per-file diff details for verbose logging.
-   * Only populated for updated files (not created/deleted).
+   * Git-style file list for verbose output.
    */
-  fileDiffs: Array<{ file: string; existingLen: number; newLen: number; firstDiffAt: number; existingSnippet: string; newSnippet: string }>;
+  filesAdded: string[];
+  filesModified: string[];
+  filesDeleted: string[];
 }
 
 /**
@@ -80,7 +81,9 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
       contentFiles: 0, manifests: 0, stateFiles: 0, other: 0,
     },
     changedFiles: [],
-    fileDiffs: [],
+    filesAdded: [],
+    filesModified: [],
+    filesDeleted: [],
   };
 
   // Track files to delete (we'll do this after processing desired files to catch renames)
@@ -131,26 +134,13 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
     if (existing === undefined) {
       result.created++;
       result.changedFiles.push(rel);
+      result.filesAdded.push(rel);
       trackChangeByType(result.byType, rel);
     } else {
       result.updated++;
       result.changedFiles.push(rel);
+      result.filesModified.push(rel);
       trackChangeByType(result.byType, rel);
-      // Record diff detail for verbose logging
-      let firstDiffAt = -1;
-      for (let i = 0; i < Math.min(existing.length, content.length); i++) {
-        if (existing[i] !== content[i]) { firstDiffAt = i; break; }
-      }
-      if (firstDiffAt === -1) firstDiffAt = Math.min(existing.length, content.length);
-      const snipStart = Math.max(0, firstDiffAt - 10);
-      result.fileDiffs.push({
-        file: rel,
-        existingLen: existing.length,
-        newLen: content.length,
-        firstDiffAt,
-        existingSnippet: existing.slice(snipStart, firstDiffAt + 20),
-        newSnippet: content.slice(snipStart, firstDiffAt + 20),
-      });
     }
   }
 

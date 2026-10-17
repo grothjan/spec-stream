@@ -194,6 +194,7 @@ async function cmdRun(
     level,
     color: isTty,
     terminal: isTty,
+    verbose: opts.verbose,
   });
 
   const app = new App({ config, apiKey, logger, dryRun: opts.dryRun, rebuild: opts.rebuild });

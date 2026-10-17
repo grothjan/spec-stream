@@ -18,6 +18,8 @@ export interface LoggerSetup {
   color: boolean;
   /** Include the terminal sink (false in background mode where stdout is the file). */
   terminal: boolean;
+  /** Show verbose output (git-style file list). */
+  verbose: boolean;
 }
 
 /** A JSONL sink that appends to a file with size-based rotation. */
@@ -42,9 +44,9 @@ export function createLogger(setup: LoggerSetup): Logger {
   const sinks = [createFileSink(setup.logFile)];
   if (setup.terminal) {
     const write = (line: string) => process.stdout.write(line + "\n");
-    sinks.push(new PrettySink(write, setup.color) as unknown as JsonlSink);
+    sinks.push(new PrettySink(write, setup.color, setup.verbose) as unknown as JsonlSink);
   }
-  return new Logger({ level: setup.level, sinks: sinks as unknown as { write(r: LogRecord): void }[] });
+  return new Logger({ level: setup.level, sinks: sinks as unknown as { write(r: LogRecord): void }[], verbose: setup.verbose });
 }
 
 function dirnameOf(p: string): string {
