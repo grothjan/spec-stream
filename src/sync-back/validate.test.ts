@@ -340,4 +340,251 @@ describe("validateModel", () => {
     const snippetIssues = result.issues.filter((i) => i.path.includes("html-snippets"));
     expect(snippetIssues).toHaveLength(0);
   });
+
+  // ─── chapterOrder validation ─────────────────────────────────────────────────
+
+  it("flags slice in chapter folder that is not listed in chapter.json sliceOrder", () => {
+    const sliceId1 = "slice-1";
+    const sliceId2 = "slice-2";
+    const laneId   = "lane-1";
+    const elemId   = "elem-1";
+    const chapterId = "chapter-1";
+
+    // Create uuid-index with chapter
+    writeJson(root, "uuid-index.json", {
+      [chapterId]: "chapters/App/Ch",
+      [sliceId1]:  "chapters/App/Ch/slices/0001_S",
+      [sliceId2]:  "chapters/App/Ch/slices/0002_S",
+      [laneId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [elemId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E",
+    });
+
+    // chapter.json only references slice-1 in sliceOrder
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId1],  // missing slice-2
+      laneOrder: [laneId],
+    });
+
+    // But folder has both slices
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId1, label: "S1" });
+    writeJson(root, "chapters/App/Ch/slices/0002_S/slice.json", { id: sliceId2, label: "S2" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E/element.json", {
+      id: elemId, name: "E1", type: "command", laneId, sliceId: sliceId1,
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    const issue = result.issues.find((i) => i.path.includes("chapter.json") && i.message.includes("slice-2"));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toBe("Slice \"slice-2\" in chapter folder is not listed in sliceOrder");
+  });
+
+  it("flags lane in chapter folder that is not listed in chapter.json laneOrder", () => {
+    const sliceId = "slice-1";
+    const laneId1 = "lane-1";
+    const laneId2 = "lane-2";
+    const elemId  = "elem-1";
+    const chapterId = "chapter-1";
+
+    writeJson(root, "uuid-index.json", {
+      [chapterId]: "chapters/App/Ch",
+      [sliceId]:   "chapters/App/Ch/slices/0001_S",
+      [laneId1]:   "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [laneId2]:   "chapters/App/Ch/slices/0001_S/lanes/system/L2",
+      [elemId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E",
+    });
+
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId],
+      laneOrder: [laneId1],  // missing lane-2
+    });
+
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId, label: "S" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId1, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L2/lane.json", { id: laneId2, label: "L2", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E/element.json", {
+      id: elemId, name: "E1", type: "command", laneId: laneId1, sliceId,
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    const issue = result.issues.find((i) => i.path.includes("chapter.json") && i.message.includes("lane-2"));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toBe("Lane \"lane-2\" in chapter folder is not listed in laneOrder");
+  });
+
+  it("flags sliceOrder entry that is not present in chapter folder", () => {
+    const sliceId = "slice-1";
+    const laneId  = "lane-1";
+    const elemId  = "elem-1";
+    const chapterId = "chapter-1";
+    const missingSlice = "missing-slice";
+
+    writeJson(root, "uuid-index.json", {
+      [chapterId]:    "chapters/App/Ch",
+      [sliceId]:      "chapters/App/Ch/slices/0001_S",
+      [laneId]:       "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [elemId]:       "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E",
+      [missingSlice]: "chapters/App/Ch/slices/0002_S",  // directory doesn't exist
+    });
+
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId, missingSlice],  // references non-existent slice
+      laneOrder: [laneId],
+    });
+
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId, label: "S" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E/element.json", {
+      id: elemId, name: "E1", type: "command", laneId, sliceId,
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    const issue = result.issues.find((i) => i.path.includes("chapter.json") && i.message.includes("missing-slice"));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toBe("sliceOrder references \"missing-slice\" which is not present in the chapter folder");
+  });
+
+  it("flags laneOrder entry that is not present in chapter folder", () => {
+    const sliceId = "slice-1";
+    const laneId  = "lane-1";
+    const elemId  = "elem-1";
+    const chapterId = "chapter-1";
+    const missingLane = "missing-lane";
+
+    writeJson(root, "uuid-index.json", {
+      [chapterId]: "chapters/App/Ch",
+      [sliceId]:   "chapters/App/Ch/slices/0001_S",
+      [laneId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [elemId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E",
+      [missingLane]: "chapters/App/Ch/slices/0001_S/lanes/system/L2",  // directory doesn't exist
+    });
+
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId],
+      laneOrder: [laneId, missingLane],  // references non-existent lane
+    });
+
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId, label: "S" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E/element.json", {
+      id: elemId, name: "E1", type: "command", laneId, sliceId,
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    const issue = result.issues.find((i) => i.path.includes("chapter.json") && i.message.includes("missing-lane"));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toBe("laneOrder references \"missing-lane\" which is not present in the chapter folder");
+  });
+
+  it("flags element with sliceId not listed in chapter.json sliceOrder", () => {
+    const sliceId1 = "slice-1";
+    const sliceId2 = "slice-2";  // not in sliceOrder
+    const laneId   = "lane-1";
+    const elemId   = "elem-1";
+    const chapterId = "chapter-1";
+
+    writeJson(root, "uuid-index.json", {
+      [chapterId]: "chapters/App/Ch",
+      [sliceId1]:  "chapters/App/Ch/slices/0001_S",
+      [sliceId2]:  "chapters/App/Ch/slices/0002_S",
+      [laneId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [elemId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E",
+    });
+
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId1],  // only slice-1, not slice-2
+      laneOrder: [laneId],
+    });
+
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId1, label: "S1" });
+    writeJson(root, "chapters/App/Ch/slices/0002_S/slice.json", { id: sliceId2, label: "S2" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0002_S/lanes/system/L1/elements/0001_E/element.json", {
+      id: elemId, name: "E1", type: "command", laneId, sliceId: sliceId2,  // sliceId2 not in sliceOrder
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    const issue = result.issues.find((i) => i.path.includes("element.json") && i.message.includes("slice-2"));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toBe("sliceId \"slice-2\" not listed in chapter.json sliceOrder");
+  });
+
+  it("flags element with laneId not listed in chapter.json laneOrder", () => {
+    const sliceId = "slice-1";
+    const laneId1 = "lane-1";
+    const laneId2 = "lane-2";  // not in laneOrder
+    const elemId  = "elem-1";
+    const chapterId = "chapter-1";
+
+    writeJson(root, "uuid-index.json", {
+      [chapterId]: "chapters/App/Ch",
+      [sliceId]:   "chapters/App/Ch/slices/0001_S",
+      [laneId1]:   "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [laneId2]:   "chapters/App/Ch/slices/0001_S/lanes/system/L2",
+      [elemId]:    "chapters/App/Ch/slices/0001_S/lanes/system/L2/elements/0001_E",
+    });
+
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId],
+      laneOrder: [laneId1],  // only lane-1, not lane-2
+    });
+
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId, label: "S" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId1, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L2/lane.json", { id: laneId2, label: "L2", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L2/elements/0001_E/element.json", {
+      id: elemId, name: "E1", type: "command", laneId: laneId2, sliceId,  // laneId2 not in laneOrder
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    const issue = result.issues.find((i) => i.path.includes("element.json") && i.message.includes("lane-2"));
+    expect(issue).toBeDefined();
+    expect(issue?.message).toBe("laneId \"lane-2\" not listed in chapter.json laneOrder");
+  });
+
+  it("passes validation for a complete model with proper chapterOrder", () => {
+    const sliceId1 = "slice-1";
+    const sliceId2 = "slice-2";
+    const laneId1  = "lane-1";
+    const laneId2  = "lane-2";
+    const elemId1  = "elem-1";
+    const elemId2  = "elem-2";
+    const chapterId = "chapter-1";
+
+    writeJson(root, "uuid-index.json", {
+      [chapterId]: "chapters/App/Ch",
+      [sliceId1]:  "chapters/App/Ch/slices/0001_S",
+      [sliceId2]:  "chapters/App/Ch/slices/0002_S",
+      [laneId1]:   "chapters/App/Ch/slices/0001_S/lanes/system/L1",
+      [laneId2]:   "chapters/App/Ch/slices/0002_S/lanes/system/L2",
+      [elemId1]:   "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E",
+      [elemId2]:   "chapters/App/Ch/slices/0002_S/lanes/system/L2/elements/0002_E",
+    });
+
+    writeJson(root, "chapters/App/Ch/chapter.json", {
+      id: chapterId, name: "Ch", context: "App",
+      sliceOrder: [sliceId1, sliceId2],
+      laneOrder: [laneId1, laneId2],
+    });
+
+    writeJson(root, "chapters/App/Ch/slices/0001_S/slice.json", { id: sliceId1, label: "S1" });
+    writeJson(root, "chapters/App/Ch/slices/0002_S/slice.json", { id: sliceId2, label: "S2" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/lane.json", { id: laneId1, label: "L1", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0002_S/lanes/system/L2/lane.json", { id: laneId2, label: "L2", type: "system" });
+    writeJson(root, "chapters/App/Ch/slices/0001_S/lanes/system/L1/elements/0001_E/element.json", {
+      id: elemId1, name: "E1", type: "command", laneId: laneId1, sliceId: sliceId1,
+    });
+    writeJson(root, "chapters/App/Ch/slices/0002_S/lanes/system/L2/elements/0002_E/element.json", {
+      id: elemId2, name: "E2", type: "command", laneId: laneId2, sliceId: sliceId2,
+    });
+
+    const result = validateModel({ syncRootAbs: root });
+    expect(result.issues).toHaveLength(0);
+  });
 });

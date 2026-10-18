@@ -12,6 +12,9 @@
  *  4. Dangling UUID references: scenario expectation sliceId/elementId not in uuid-index
  *     AND not a locally-assigned UUID.
  *  5. UUID collisions: two different dirs claim the same UUID.
+ *  6. chapter.json sliceOrder and laneOrder must reference all slices/lanes in the chapter.
+ *  7. chapter.json sliceOrder/laneOrder entries must exist as directories.
+ *  8. element.json sliceId and laneId must be listed in chapter.json sliceOrder and laneOrder.
  *
  * Exits 0 if clean, 1 if any issues found.
  */
@@ -88,7 +91,58 @@ export function validateModel(opts: ValidateOptions): ValidateResult {
   // ── 2. Walk all .json files and validate them ────────────────────────────────
   const allJsonFiles = collectJsonFiles(syncRootAbs);
 
-  // ── 2a. Collect all locally-present entity IDs (id fields in *.json files) ──
+  // ── 2a. First pass: collect all chapters and their sliceOrder/laneOrder ─────
+  // Also collect all slice and lane UUIDs found in the tree per chapter
+  // Create reverse map: chapter dir → chapter uuid
+  const dirToChapterUuid = new Map<string, string>();
+  const chapterDirs = new Map<string, { sliceOrder: string[]; laneOrder: string[] }>();
+  const chapterFolderSlices = new Map<string, Set<string>>();
+  const chapterFolderLanes = new Map<string, Set<string>>();
+
+  for (const relPath of allJsonFiles) {
+    if (relPath.endsWith("/chapter.json")) {
+      const chapterData = readJsonChecked(syncRootAbs, relPath, issues);
+      if (chapterData) {
+        const sliceOrder = Array.isArray(chapterData["sliceOrder"]) ? chapterData["sliceOrder"] : [];
+        const laneOrder = Array.isArray(chapterData["laneOrder"]) ? chapterData["laneOrder"] : [];
+        const chapterUuid = typeof chapterData["id"] === "string" ? chapterData["id"] : null;
+
+        // The chapter directory is the path without /chapter.json
+        const chapterDir = relPath.slice(0, -"/chapter.json".length);
+
+        if (chapterUuid) {
+          dirToChapterUuid.set(chapterDir, chapterUuid);
+          chapterDirs.set(chapterUuid, { sliceOrder, laneOrder });
+          chapterFolderSlices.set(chapterUuid, new Set<string>());
+          chapterFolderLanes.set(chapterUuid, new Set<string>());
+        }
+      }
+    } else if (relPath.endsWith("/slice.json")) {
+      const sliceData = readJsonChecked(syncRootAbs, relPath, issues);
+      if (sliceData && typeof sliceData["id"] === "string") {
+        // Find the chapter this slice belongs to
+        const dir = relPath.slice(0, -"/slice.json".length);
+        const chapterDir = extractChapterDir(dir);
+        const chapterUuid = chapterDir ? dirToChapterUuid.get(chapterDir) : null;
+        if (chapterUuid) {
+          chapterFolderSlices.get(chapterUuid)?.add(sliceData["id"]);
+        }
+      }
+    } else if (relPath.endsWith("/lane.json")) {
+      const laneData = readJsonChecked(syncRootAbs, relPath, issues);
+      if (laneData && typeof laneData["id"] === "string") {
+        // Find the chapter this lane belongs to
+        const dir = relPath.slice(0, -"/lane.json".length);
+        const chapterDir = extractChapterDir(dir);
+        const chapterUuid = chapterDir ? dirToChapterUuid.get(chapterDir) : null;
+        if (chapterUuid) {
+          chapterFolderLanes.get(chapterUuid)?.add(laneData["id"]);
+        }
+      }
+    }
+  }
+
+  // ── 2b. Collect all locally-present entity IDs (id fields in *.json files) ──
   // These are UUIDs the agent assigned locally that may not yet be in uuid-index.json
   // because sync-back hasn't been called yet (or the sync process hasn't echoed them
   // back). A laneId/sliceId reference to one of these is a valid local reference and
@@ -110,6 +164,7 @@ export function validateModel(opts: ValidateOptions): ValidateResult {
     }
   }
 
+  // ── 2c. Second pass: run all validations ─────────────────────────────────────
   for (const relPath of allJsonFiles) {
     if (relPath === uuidIndexPath || relPath === "workspace.json") {
       // Already handled or no required fields to check.
@@ -125,13 +180,11 @@ export function validateModel(opts: ValidateOptions): ValidateResult {
 
     // Dispatch to per-kind validators based on filename.
     if (relPath.endsWith("/element.json")) {
-      checkElementJson(relPath, data, uuidToDir, localIds, issues);
+      checkElementJson(relPath, data, uuidToDir, localIds, issues, chapterDirs, dirToChapterUuid);
     } else if (relPath.endsWith("/scenario.json")) {
       checkScenarioJson(relPath, data, uuidToDir, localIds, issues);
     } else if (relPath.endsWith("/chapter.json")) {
-      checkRequiredString(relPath, data, "id", issues);
-      checkRequiredString(relPath, data, "name", issues);
-      checkRequiredString(relPath, data, "context", issues);
+      checkChapterJson(relPath, data, issues, chapterDirs, chapterFolderSlices, chapterFolderLanes);
     } else if (relPath.endsWith("/slice.json")) {
       checkRequiredString(relPath, data, "id", issues);
       checkRequiredString(relPath, data, "label", issues);
@@ -161,12 +214,98 @@ const EXPECTATION_KINDS = ["events", "information", "rejection"] as const;
 /** Matches html-snippets/[slug].json (no subdirectory between html-snippets and the file). */
 const HTML_SNIPPET_JSON_RE = /^html-snippets\/[^/]+\.json$/;
 
+/**
+ * Extract the chapter directory path from a file path.
+ * E.g., "chapters/App/Ch/slices/0001_S/lanes/system/L/elements/0001_E" -> "chapters/App/Ch"
+ * Also handles UUID-based chapter paths like "chapters/uuid/..."
+ */
+function extractChapterDir(filePath: string): string | null {
+  // Match pattern: chapters/<chapter-name>/... -> extract up to chapters/<chapter-name>
+  // Chapter name can be either a UUID (36 chars with hyphens) or a path-like name
+  // First try to match UUID pattern: chapters/uuid/...
+  const uuidMatch = filePath.match(/^(chapters\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/.*)?$/i);
+  if (uuidMatch) {
+    return uuidMatch[1];
+  }
+  // Fallback: match two-segment paths like chapters/App/Ch/...
+  const twoMatch = filePath.match(/^(chapters\/[^/]+\/[^/]+)(?:\/.*)?$/);
+  return twoMatch ? twoMatch[1] : null;
+}
+
+function checkChapterJson(
+  relPath: string,
+  data: Record<string, unknown>,
+  issues: ValidationIssue[],
+  chapterDirs: Map<string, { sliceOrder: string[]; laneOrder: string[] }>,
+  chapterFolderSlices: Map<string, Set<string>>,
+  chapterFolderLanes: Map<string, Set<string>>,
+): void {
+  checkRequiredString(relPath, data, "id", issues);
+  checkRequiredString(relPath, data, "name", issues);
+  checkRequiredString(relPath, data, "context", issues);
+
+  const chapterUuid = data["id"] as string;
+  if (!chapterUuid || typeof chapterUuid !== "string") {
+    return; // Cannot validate without valid UUID
+  }
+
+  // Validate chapterOrder references match folder contents
+  const chapterOrder = chapterDirs.get(chapterUuid);
+  const folderSlices = chapterFolderSlices.get(chapterUuid);
+  const folderLanes = chapterFolderLanes.get(chapterUuid);
+
+  // If chapterOrder is not defined (empty arrays), skip the chapterOrder validation
+  // This maintains backward compatibility with models that don't use chapterOrder
+  if (!chapterOrder || !folderSlices || !folderLanes) {
+    // Chapter not found in our maps, skip additional checks
+    return;
+  }
+
+  const { sliceOrder, laneOrder } = chapterOrder;
+
+  // Only perform chapterOrder validation if the arrays are non-empty
+  // This maintains backward compatibility with models that don't use chapterOrder
+  if (sliceOrder.length === 0 && laneOrder.length === 0) {
+    return;
+  }
+
+  // Check 1: All slices in folder must be in sliceOrder
+  for (const sliceId of folderSlices) {
+    if (!sliceOrder.includes(sliceId)) {
+      issues.push({ path: relPath, message: `Slice "${sliceId}" in chapter folder is not listed in sliceOrder` });
+    }
+  }
+
+  // Check 2: All lanes in folder must be in laneOrder
+  for (const laneId of folderLanes) {
+    if (!laneOrder.includes(laneId)) {
+      issues.push({ path: relPath, message: `Lane "${laneId}" in chapter folder is not listed in laneOrder` });
+    }
+  }
+
+  // Check 3: All entries in sliceOrder must exist in folder
+  for (const sliceId of sliceOrder) {
+    if (!folderSlices.has(sliceId)) {
+      issues.push({ path: relPath, message: `sliceOrder references "${sliceId}" which is not present in the chapter folder` });
+    }
+  }
+
+  // Check 4: All entries in laneOrder must exist in folder
+  for (const laneId of laneOrder) {
+    if (!folderLanes.has(laneId)) {
+      issues.push({ path: relPath, message: `laneOrder references "${laneId}" which is not present in the chapter folder` });
+    }
+  }
+}
+
 function checkElementJson(
   relPath: string,
   data: Record<string, unknown>,
   uuidToDir: Map<string, string>,
   localIds: Set<string>,
   issues: ValidationIssue[],
+  chapterDirs: Map<string, { sliceOrder: string[]; laneOrder: string[] }>,
+  dirToChapterUuid: Map<string, string>,
 ): void {
   checkRequiredString(relPath, data, "id", issues);
   checkRequiredString(relPath, data, "name", issues);
@@ -187,6 +326,27 @@ function checkElementJson(
     issues.push({ path: relPath, message: `Missing required field "sliceId"` });
   } else if (!uuidToDir.has(sliceId) && !localIds.has(sliceId)) {
     issues.push({ path: relPath, message: `sliceId "${sliceId}" not found in uuid-index.json` });
+  }
+
+  // Extract chapter from element path and validate sliceId/laneId are in chapterOrder
+  const elementDir = relPath.slice(0, -"/element.json".length);
+  const chapterDir = extractChapterDir(elementDir);
+  if (chapterDir) {
+    const chapterUuid = dirToChapterUuid.get(chapterDir);
+    if (chapterUuid) {
+      const chapterOrder = chapterDirs.get(chapterUuid);
+      if (chapterOrder) {
+        const { sliceOrder, laneOrder } = chapterOrder;
+        // Only validate if chapterOrder has entries (non-empty arrays)
+        // This maintains backward compatibility with models that don't use chapterOrder
+        if (sliceOrder.length > 0 && !sliceOrder.includes(sliceId || "")) {
+          issues.push({ path: relPath, message: `sliceId "${sliceId}" not listed in chapter.json sliceOrder` });
+        }
+        if (laneOrder.length > 0 && !laneOrder.includes(laneId || "")) {
+          issues.push({ path: relPath, message: `laneId "${laneId}" not listed in chapter.json laneOrder` });
+        }
+      }
+    }
   }
 }
 
