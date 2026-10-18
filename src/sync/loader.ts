@@ -404,24 +404,37 @@ export function loadFromDisk(dir: string, workspaceId: string, workspaceName: st
   const snippetsDir = join(dir, "html-snippets");
   if (existsSync(snippetsDir)) {
     try {
-      const snippetDirs = readdirSync(snippetsDir, { withFileTypes: true }).filter((d) =>
-        d.isDirectory() && d.name.startsWith("global-styles"),
+      const snippetFiles = readdirSync(snippetsDir, { withFileTypes: true }).filter((d) =>
+        d.isFile() && d.name.endsWith(".html"),
       );
-      // Read the .html file for each directory
-      for (const snippetDir of snippetDirs) {
-        const htmlPath = join(snippetsDir, snippetDir.name, snippetDir.name + ".html");
+      // Read the .html file for each snippet
+      for (const snippetFile of snippetFiles) {
+        const htmlPath = join(snippetsDir, snippetFile.name);
         if (existsSync(htmlPath)) {
           try {
             const htmlContent = readFileSync(htmlPath, "utf8");
-            const jsonPath = join(snippetsDir, snippetDir.name, snippetDir.name + ".json");
+            // The slug is the filename without .html extension
+            const slug = snippetFile.name.slice(0, -5); // remove ".html"
+            const jsonPath = join(snippetsDir, slug + ".json");
             let snippetData: { slug: string; name: string; createdAt?: string; updatedAt?: string };
             if (existsSync(jsonPath)) {
               snippetData = JSON.parse(readFileSync(jsonPath, "utf8")) as { slug: string; name: string; createdAt?: string; updatedAt?: string };
             } else {
-              // Fallback: derive from directory name
-              snippetData = { slug: snippetDir.name, name: snippetDir.name };
+              // Fallback: derive from slug
+              snippetData = { slug, name: slug };
             }
-            applyEvent(state, synthEvent("html-snippet-added", null, { slug: snippetData.slug, newValue: { snippet: htmlContent, name: snippetData.name } }));
+            // Build the snippet object matching the API structure (slug, name, snippet, created_at, updated_at)
+            const snippetObj = {
+              slug: snippetData.slug,
+              name: snippetData.name,
+              snippet: htmlContent,
+              created_at: snippetData.createdAt,
+              updated_at: snippetData.updatedAt,
+            };
+            applyEvent(state, synthEvent("html-snippet-added", null, {
+              slug: snippetData.slug,
+              newValue: { snippet: snippetObj },
+            }));
           } catch {
             // Skip malformed snippet
             continue;
