@@ -34,6 +34,7 @@ import {
   type ScenarioExpectationSnapshot,
   type ScenarioInteractionSnapshot,
 } from "./manifest.js";
+import { resolvePaths, createSyncBackLock, removeSyncBackLock } from "../lifecycle/paths.js";
 
 export interface SyncBackOptions {
   /** Path to the config file (optional, defaults to discovery). */
@@ -103,8 +104,21 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
     );
   }
 
+  // ─── Create lock file FIRST (before anything else, except dry-run) ───────
+  // The lock file is the first operation sync-back does.
+  // It stays in place if sync-back fails, preventing sync from running.
   const syncDir = config.localSync.dir ?? ".spec-stream/model";
   const syncDirAbs = resolve(cwd, syncDir);
+  const paths = resolvePaths({
+    configDir: config.configDir,
+    logDirOverride: config.logDir,
+    stateDirOverride: config.stateDir,
+  });
+
+  if (!dryRun) {
+    createSyncBackLock(paths);
+    debug(`Lock file created: ${paths.syncBackLockFile}`);
+  }
 
   debug(`Sync root: ${syncDirAbs}`);
 
@@ -131,6 +145,11 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
 
   if (diffs.length === 0) {
     log("No changes detected — nothing to sync back.");
+    // No changes - remove lock and return early
+    if (!dryRun) {
+      removeSyncBackLock(paths);
+      debug(`Lock file removed (no changes): ${paths.syncBackLockFile}`);
+    }
     return { operationCount: 0, executed: 0, skipped: 0, failed: 0, errors: [] };
   }
 
@@ -145,6 +164,11 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
 
   if (operations.length === 0) {
     log("No sync-back operations to perform.");
+    // No operations - remove lock and return early
+    if (!dryRun) {
+      removeSyncBackLock(paths);
+      debug(`Lock file removed (no operations): ${paths.syncBackLockFile}`);
+    }
     return { operationCount: 0, executed: 0, skipped: 0, failed: 0, errors: [] };
   }
 
@@ -273,13 +297,24 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
 
   // ─── Summary ──────────────────────────────────────────────────────────────
   const total = operations.length;
+  let success = false;
   if (dryRun) {
     log(`Done (dry-run): ${total} operation(s) would be executed.`);
+    success = true; // dry-run always succeeds
   } else {
     const parts: string[] = [];
     if (execResult.executed > 0) parts.push(`${execResult.executed} succeeded`);
     if (execResult.failed > 0) parts.push(`${execResult.failed} failed`);
     log(`Done: ${parts.join(", ")}.`);
+    success = execResult.failed === 0;
+  }
+
+  // Remove lock file only if successful (not dry-run and no failures)
+  if (!dryRun && success) {
+    removeSyncBackLock(paths);
+    debug(`Lock file removed: ${paths.syncBackLockFile}`);
+  } else if (!dryRun && !success) {
+    log(`Lock file remains at ${paths.syncBackLockFile} - sync-back did not complete successfully.`);
   }
 
   return {
@@ -320,7 +355,7 @@ async function runPreSyncChecks(
   const { readdir } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const chaptersRoot = join(syncRootAbs, "chapters");
-  
+
   let hasTypeErrors = false;
   let chaptersDirs: string[] = [];
   try {

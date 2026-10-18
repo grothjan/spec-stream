@@ -479,6 +479,11 @@ describe("App reconnect catch-up", () => {
           syncedAt: "2026-10-02T09:00:00Z",
         }),
       );
+      // Also create workspace.json so hasValidLocalModel() returns true and we load from disk
+      writeFileSync(
+        join(tmp, "workspace.json"),
+        JSON.stringify({ id: "ws-1", name: "Test Workspace" }),
+      );
       const cfg = validateConfig({
         endpoint: "https://flow.prooph-board.com/api",
         rules: [{ id: "spec", on: "*", run: "x" }],
@@ -514,8 +519,10 @@ describe("App reconnect catch-up", () => {
       supa.emitStatus("CLOSED");
       supa.emitStatus("SUBSCRIBED");
       await new Promise((r) => setTimeout(r, 10));
-      expect(changelogCalls.length).toBe(1);
+      // First subscribe with cursor triggers catch-up, and re-subscribe triggers another catch-up
+      expect(changelogCalls.length).toBe(2);
       expect(changelogCalls[0]).toContain("since=2026-10-02T09%3A00%3A00Z");
+      expect(changelogCalls[1]).toContain("since=2026-10-02T09%3A00%3A00Z");
 
       await app.stop();
     } finally {

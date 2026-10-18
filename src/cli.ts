@@ -15,7 +15,7 @@ import { runScenarioCommand } from "./scenario/index.js";
 import { loadConfig, resolveApiKey } from "./config/load.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { ConfigError } from "./config/schema.js";
-import { resolvePaths } from "./lifecycle/paths.js";
+import { resolvePaths, isSyncBackLocked } from "./lifecycle/paths.js";
 import { PidFile } from "./lifecycle/pidfile.js";
 import { daemonize } from "./lifecycle/daemon.js";
 import { createLogger } from "./logging/setup.js";
@@ -174,6 +174,14 @@ async function cmdRun(
   paths: ReturnType<typeof resolvePaths>,
   pidFile: PidFile,
 ): Promise<void> {
+  // Check for sync-back lock before starting
+  if (isSyncBackLocked(paths)) {
+    fail(
+      "sync-back is in progress (lock file present). " +
+      "Wait for sync-back to complete, or manually remove " + paths.syncBackLockFile + ". But only if you are certain that no local changes need to be synced back first, otherwise they would get lost!",
+    );
+  }
+
   let apiKey: string;
   try {
     // Also honor a .env next to the config file (cwd .env was already loaded in main()).

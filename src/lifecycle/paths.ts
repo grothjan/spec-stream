@@ -9,7 +9,8 @@
  */
 
 import { homedir } from "node:os";
-import { join, resolve, isAbsolute } from "node:path";
+import { join, resolve, isAbsolute, dirname } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 
 export interface PathInputs {
   /** Directory of the resolved config file. */
@@ -35,6 +36,8 @@ export interface ResolvedPaths {
   pidFile: string;
   logFile: string;
   commandsDir: string;
+  /** Path to sync-back lock file. */
+  syncBackLockFile: string;
 }
 
 const APP = "spec-stream";
@@ -76,5 +79,41 @@ export function resolvePaths(inputs: PathInputs): ResolvedPaths {
     pidFile: join(stateBase, `${APP}.pid`),
     logFile: join(logDir, `${APP}.jsonl`),
     commandsDir: join(logDir, "commands"),
+    syncBackLockFile: join(stateBase, "sync-back-lock"),
   };
+}
+
+/**
+ * Check if sync-back lock file exists.
+ */
+export function isSyncBackLocked(paths: ResolvedPaths): boolean {
+  return existsSync(paths.syncBackLockFile);
+}
+
+/**
+ * Create sync-back lock file.
+ * Returns the lock file path on success, throws on error.
+ */
+export function createSyncBackLock(paths: ResolvedPaths): string {
+  const lockFile = paths.syncBackLockFile;
+  const lockDir = dirname(lockFile);
+  if (!existsSync(lockDir)) {
+    mkdirSync(lockDir, { recursive: true });
+  }
+  writeFileSync(lockFile, JSON.stringify({
+    pid: process.pid,
+    createdAt: new Date().toISOString(),
+  }, null, 2));
+  return lockFile;
+}
+
+/**
+ * Remove sync-back lock file.
+ */
+export function removeSyncBackLock(paths: ResolvedPaths): void {
+  try {
+    unlinkSync(paths.syncBackLockFile);
+  } catch {
+    // Ignore - file may already be gone
+  }
 }

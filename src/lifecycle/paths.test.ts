@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { resolvePaths } from "./paths.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { resolvePaths, isSyncBackLocked, createSyncBackLock, removeSyncBackLock } from "./paths.js";
+import { existsSync, unlinkSync, mkdirSync, rmdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 describe("resolvePaths — project mode (default)", () => {
   it("places state under <configDir>/.spec-stream", () => {
@@ -62,5 +64,70 @@ describe("resolvePaths — user/daemon mode", () => {
       home: "C:/Users/u",
     });
     expect(p.baseDir.replace(/\\/g, "/")).toBe("C:/Users/u/AppData/Local/spec-stream");
+  });
+});
+
+describe("sync-back lock file", () => {
+  const testDir = "/tmp/spec-stream-test-lock";
+  const testStateDir = join(testDir, ".spec-stream", "state");
+
+  beforeEach(() => {
+    // Clean up before each test
+    if (existsSync(testDir)) {
+      rmdirSync(testDir, { recursive: true });
+    }
+  });
+
+  afterEach(() => {
+    // Clean up after each test
+    if (existsSync(testDir)) {
+      rmdirSync(testDir, { recursive: true });
+    }
+  });
+
+  it("isLocked returns false when lock file does not exist", () => {
+    const paths = resolvePaths({ configDir: testDir, stateDirOverride: testStateDir });
+    expect(isSyncBackLocked(paths)).toBe(false);
+  });
+
+  it("isLocked returns true when lock file exists", () => {
+    const paths = resolvePaths({ configDir: testDir, stateDirOverride: testStateDir });
+    createSyncBackLock(paths);
+    expect(isSyncBackLocked(paths)).toBe(true);
+  });
+
+  it("createSyncBackLock creates the lock file with PID and timestamp", () => {
+    const paths = resolvePaths({ configDir: testDir, stateDirOverride: testStateDir });
+    const lockFile = createSyncBackLock(paths);
+
+    expect(lockFile).toBe(paths.syncBackLockFile);
+    expect(existsSync(lockFile)).toBe(true);
+
+    const content = JSON.parse(readFileSync(lockFile, "utf8"));
+    expect(content).toHaveProperty("pid");
+    expect(content.pid).toBe(process.pid);
+    expect(content).toHaveProperty("createdAt");
+    expect(new Date(content.createdAt).toISOString()).toBeDefined();
+  });
+
+  it("removeSyncBackLock deletes the lock file", () => {
+    const paths = resolvePaths({ configDir: testDir, stateDirOverride: testStateDir });
+    createSyncBackLock(paths);
+    expect(existsSync(paths.syncBackLockFile)).toBe(true);
+
+    removeSyncBackLock(paths);
+    expect(existsSync(paths.syncBackLockFile)).toBe(false);
+  });
+
+  it("removeSyncBackLock handles missing file gracefully", () => {
+    const paths = resolvePaths({ configDir: testDir, stateDirOverride: testStateDir });
+    // File doesn't exist - should not throw
+    expect(() => removeSyncBackLock(paths)).not.toThrow();
+    expect(existsSync(paths.syncBackLockFile)).toBe(false);
+  });
+
+  it("lock file path is correct", () => {
+    const paths = resolvePaths({ configDir: testDir, stateDirOverride: testStateDir });
+    expect(paths.syncBackLockFile).toBe(join(testStateDir, "sync-back-lock"));
   });
 });
