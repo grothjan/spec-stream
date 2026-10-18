@@ -343,10 +343,15 @@ async function runPreSyncChecks(
   const validateResult = import("./validate.js").then(({ validateModel }) =>
     validateModel({ syncRootAbs, verbose })
   );
-  if ((await validateResult).issues.length > 0) {
+  const result = await validateResult;
+  if (result.issues.length > 0) {
+    log("  Issues found:");
+    for (const issue of result.issues) {
+      log(`    ${issue.path}: ${issue.message}`);
+    }
     throw new Error("Model validation failed. Fix issues before syncing back.");
   }
-  log(`  ✓ ${(await validateResult).checked} file(s) checked — no issues found.`);
+  log(`  ✓ ${result.checked} file(s) checked — no issues found.`);
 
   // ─── 2. Typecheck ─────────────────────────────────────────────────────────
   log(`${dryRun ? "[dry-run] " : ""}Running typecheck on play functions...`);
