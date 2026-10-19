@@ -199,6 +199,58 @@ describe("buildOperations", () => {
     });
   });
 
+  // ─── Slice reorder ────────────────────────────────────────────────────────
+  it("update diff on chapter with changed sliceOrder emits slice.reorder", async () => {
+    const SLICE_ID_2 = "slice-uuid-2";
+    const SLICE_ID_3 = "slice-uuid-3";
+    const newOrder = [SLICE_ID_2, SLICE_ID, SLICE_ID_3];
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, {
+      id: CHAPTER_ID, name: "My Chapter", context: "App", mode: "event-modeling", index: 0,
+      sliceOrder: newOrder,
+    });
+    const diffs: EntityDiff[] = [updateDiff(CHAPTER_DIR, "chapter", CHAPTER_ID, {
+      oldFields: { name: "My Chapter", context: "App", sliceOrder: [SLICE_ID, SLICE_ID_2, SLICE_ID_3] },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const reorderOp = ops.find((o) => o.kind === "slice.reorder");
+    expect(reorderOp).toMatchObject({
+      kind: "slice.reorder",
+      chapterId: CHAPTER_ID,
+      newSliceIds: newOrder,
+    });
+  });
+
+  it("update diff on chapter with unchanged sliceOrder does NOT emit slice.reorder", async () => {
+    const order = [SLICE_ID, "slice-uuid-2"];
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, {
+      id: CHAPTER_ID, name: "My Chapter", context: "App", mode: "event-modeling", index: 0,
+      sliceOrder: order,
+    });
+    const diffs: EntityDiff[] = [updateDiff(CHAPTER_DIR, "chapter", CHAPTER_ID, {
+      oldFields: { name: "My Chapter", context: "App", sliceOrder: order },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    expect(ops.find((o) => o.kind === "slice.reorder")).toBeUndefined();
+  });
+
+  it("update diff on chapter with no prior sliceOrder emits slice.reorder", async () => {
+    const order = [SLICE_ID, "slice-uuid-2"];
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, {
+      id: CHAPTER_ID, name: "My Chapter", context: "App", mode: "event-modeling", index: 0,
+      sliceOrder: order,
+    });
+    // oldFields has no sliceOrder → treated as changed
+    const diffs: EntityDiff[] = [updateDiff(CHAPTER_DIR, "chapter", CHAPTER_ID, {
+      oldFields: { name: "My Chapter", context: "App" },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    expect(ops.find((o) => o.kind === "slice.reorder")).toMatchObject({
+      kind: "slice.reorder",
+      chapterId: CHAPTER_ID,
+      newSliceIds: order,
+    });
+  });
+
   // ─── localId forwarding ────────────────────────────────────────────────────
   it("chapter.create carries localId from chapter.json", async () => {
     setupChapter(root);
@@ -755,19 +807,25 @@ describe("buildOperations", () => {
       expect(board).toEqual(["A", "B", "X"]);
     });
 
-    // Second half of the bug: there is no reorder path at all. Changing `index`
-    // in slice.json (or `sliceOrder` in chapter.json) produces zero operations.
-    // This documents the gap — the API's /slices/reorder endpoint is currently
-    // broken (HTTP 500), so a slice.reorder op cannot be added yet.
-    it("emits no operation when only slice index / chapter sliceOrder changes", async () => {
+    // When sliceOrder in chapter.json changes, we now emit a slice.reorder op.
+    // The /slices/reorder endpoint is confirmed working (POST {new_slice_ids: [...]}).
+    it("emits slice.reorder when chapter sliceOrder changes", async () => {
       setupOrderedSlices();
+      // Simulate the user reordering: chapter.json now has A at index 5, sliceOrder reflects new order
       writeJson(root, `${DIR_A}/slice.json`, { id: SLICE_A, label: "A", index: 5 });
+      const newOrder = [SLICE_B, SLICE_X, SLICE_A];
+      writeJson(root, `${CHAPTER_DIR}/chapter.json`, { id: CHAPTER_ID, name: "Ordered", context: "App", mode: "event-modeling", index: 0, sliceOrder: newOrder });
       const diffs: EntityDiff[] = [
         updateDiff(DIR_A, "slice", SLICE_A, { oldFields: { id: SLICE_A, label: "A", index: 0 } }),
-        updateDiff(CHAPTER_DIR, "chapter", CHAPTER_ID, { oldFields: { id: CHAPTER_ID, name: "Ordered", context: "App" } }),
+        updateDiff(CHAPTER_DIR, "chapter", CHAPTER_ID, { oldFields: { id: CHAPTER_ID, name: "Ordered", context: "App", sliceOrder: [SLICE_A, SLICE_B, SLICE_X] } }),
       ];
       const ops = await buildOperations({ syncRootAbs: root, diffs });
-      expect(ops).toEqual([]);
+      const reorderOp = ops.find((o) => o.kind === "slice.reorder");
+      expect(reorderOp).toMatchObject({
+        kind: "slice.reorder",
+        chapterId: CHAPTER_ID,
+        newSliceIds: newOrder,
+      });
     });
   });
 });

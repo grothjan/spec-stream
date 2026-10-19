@@ -199,6 +199,12 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
       });
       return undefined;
 
+    case "slice.reorder":
+      await client.postJson(`/chapters/${enc(op.chapterId)}/slices/reorder`, {
+        new_slice_ids: op.newSliceIds,
+      });
+      return undefined;
+
     case "slice.delete":
       await client.deleteReq(`/chapters/${enc(op.chapterId)}/slices/${enc(op.sliceId)}`);
       return undefined;
@@ -422,6 +428,7 @@ function describeOperation(op: SyncBackOperation): string {
     case "slice.rename":            return `Rename slice ${op.sliceId} → "${op.newLabel}"`;
     case "slice.update-details":    return `Update slice ${op.sliceId} details`;
     case "slice.update-status":     return `Update slice ${op.sliceId} status → "${op.newStatus}"`;
+    case "slice.reorder":           return `Reorder ${op.newSliceIds.length} slices in chapter ${op.chapterId}`;
     case "slice.delete":            return `Delete slice ${op.sliceId}`;
     case "element.create":          return `Create element "${op.name}" (${op.type}) in chapter ${op.chapterId}`;
     case "element.rename":          return `Rename element ${op.elementId} → "${op.newName}"`;

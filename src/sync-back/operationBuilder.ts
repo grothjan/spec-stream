@@ -62,6 +62,7 @@ export type OperationKind =
   | "slice.rename"
   | "slice.update-details"
   | "slice.update-status"
+  | "slice.reorder"
   | "slice.delete"
   // Element
   | "element.create"
@@ -179,6 +180,7 @@ export type SyncBackOperation =
   | { kind: "slice.rename"; chapterId: string; sliceId: string; newLabel: string; entityDir: string }
   | { kind: "slice.update-details"; chapterId: string; sliceId: string; newDetails: string; entityDir: string }
   | { kind: "slice.update-status"; chapterId: string; sliceId: string; newStatus: string; entityDir: string }
+  | { kind: "slice.reorder"; chapterId: string; newSliceIds: string[]; entityDir: string }
   | { kind: "slice.delete"; chapterId: string; sliceId: string; entityDir: string }
   | { kind: "element.create"; chapterId: string; name: string; type: string; laneId: string; sliceId: string; description?: string; details?: string; index?: number; context?: string; entityDir: string; localId?: string }
   | { kind: "element.rename"; chapterId: string; elementId: string; newName: string; entityDir: string }
@@ -227,6 +229,7 @@ const PRIORITY: Record<OperationKind, number> = {
   "slice.rename": 4,
   "slice.update-details": 4,
   "slice.update-status": 4,
+  "slice.reorder": 4,
   "element.rename": 4,
   "element.update-description": 4,
   "element.update-details": 4,
@@ -390,6 +393,14 @@ async function handleUpdate(
         ops.push({ kind: "chapter.rename", chapterId: entityId, newName: data.name, entityDir });
       if (data?.context !== undefined && changed("context", data.context))
         ops.push({ kind: "chapter.update-context", chapterId: entityId, newContext: data.context, entityDir });
+      // Slice reorder: emit when sliceOrder array changed.
+      if (Array.isArray(data?.sliceOrder)) {
+        const oldOrder = Array.isArray(old["sliceOrder"]) ? (old["sliceOrder"] as string[]) : undefined;
+        const newOrder = data.sliceOrder as string[];
+        const orderChanged = !oldOrder || JSON.stringify(oldOrder) !== JSON.stringify(newOrder);
+        if (orderChanged && newOrder.length > 0)
+          ops.push({ kind: "slice.reorder", chapterId: entityId, newSliceIds: newOrder, entityDir });
+      }
       break;
     }
     case "slice": {

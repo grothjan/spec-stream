@@ -604,6 +604,26 @@ describe("executeOperations", () => {
     });
   });
 
+  it("executes slice.reorder", async () => {
+    const client = makeMockClient();
+    const newSliceIds = ["slice-2", "slice-1", "slice-3"];
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "slice.reorder",
+        chapterId: "chap-1",
+        newSliceIds,
+        entityDir: "chapters/chap-1",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters/chap-1/slices/reorder",
+      body: { new_slice_ids: newSliceIds },
+    });
+  });
+
   // ─── localId forwarding ───────────────────────────────────────────────────
 
   it("chapter.create passes localId as id in the request body", async () => {
