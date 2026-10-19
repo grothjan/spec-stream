@@ -89,6 +89,78 @@ describe("slice events", () => {
     expect(s.slices.get("s2")?.index).toBe(0);
   });
 
+  it("slices-moved: moves a slice into the slot of a new blank slice (overriddenSliceIds), updates element sliceIds, and re-sorts sliceOrder", () => {
+    // Mirrors the real-world prooph board event sequence:
+    // 1. slice-added creates a blank placeholder at index 4 ("s-blank")
+    // 2. slices-reordered inserts the placeholder into the order
+    // 3. slices-moved moves "s1" (Register Lead, was index 0) into that position,
+    //    overriding the blank slice — s-blank is consumed and s1 ends up at index 4.
+    const s = base();
+
+    // Add three more slices so we have s1(0), s2(1), s3(2), s4(3)
+    applyEvent(s, ev("slice-added", { chapterId: "c1", data: { newValue: { slice: { id: "s2", label: "Sign Up View", index: 1, status: "draft" } } } }));
+    applyEvent(s, ev("slice-added", { chapterId: "c1", data: { newValue: { slice: { id: "s3", label: "Sign Up", index: 2, status: "draft" } } } }));
+    applyEvent(s, ev("slice-added", { chapterId: "c1", data: { newValue: { slice: { id: "s4", label: "New User Sync", index: 3, status: "draft" } } } }));
+
+    // Add elements that belong to s1 (will be moved with it)
+    applyEvent(s, ev("element-added", { chapterId: "c1", data: { newValue: { element: { id: "el1", type: "command", name: "Register Lead", context: "App", laneId: "l1", sliceId: "s1", index: 0 } } } }));
+    applyEvent(s, ev("element-added", { chapterId: "c1", data: { newValue: { element: { id: "el2", type: "event", name: "Lead Registered", context: "App", laneId: "l1", sliceId: "s1", index: 0 } } } }));
+
+    // Step 1: blank placeholder slice created at index 4
+    applyEvent(s, ev("slice-added", { chapterId: "c1", data: { newValue: { slice: { id: "s-blank", label: "Slice 6", index: 4, status: "draft" } } } }));
+
+    // Step 2: chapter order updated to include the blank placeholder
+    applyEvent(s, ev("slices-reordered", { chapterId: "c1", data: { newValue: { sliceIds: ["s1", "s2", "s3", "s4", "s-blank"] } } }));
+    expect(s.chapters.get("c1")?.sliceOrder).toEqual(["s1", "s2", "s3", "s4", "s-blank"]);
+
+    // Step 3: slices-moved — s1 moves to index 4, overriding s-blank
+    applyEvent(s, ev("slices-moved", {
+      chapterId: "c1",
+      data: {
+        sourceChapterId: "c1",
+        targetChapterId: "c1",
+        newValue: {
+          slices: [
+            {
+              slice: { id: "s1", label: "Register Lead", index: 4, status: "draft", details: "", width: 250 },
+              elements: [
+                { id: "el1", name: "Register Lead", type: "command", sliceId: "s1" },
+                { id: "el2", name: "Lead Registered", type: "event", sliceId: "s1" },
+              ],
+              newSliceId: "s1",
+              oldSliceId: "s1",
+            },
+          ],
+          overriddenSliceIds: ["s-blank"],
+          removedSourceSlices: ["s1"],
+          anchorSliceIndex: 4,
+        },
+        oldValue: {
+          sourceSlices: [{ slice: { id: "s1", index: 0 }, elements: [] }],
+          targetSlices: [{ id: "s-blank", index: 4 }],
+        },
+      },
+    }));
+
+    // s-blank must be gone — it was overridden/consumed
+    expect(s.slices.has("s-blank")).toBe(false);
+
+    // s1 must still exist with updated index
+    expect(s.slices.has("s1")).toBe(true);
+    expect(s.slices.get("s1")?.index).toBe(4);
+
+    // sliceOrder must have s1 at the end (index 4), s-blank removed
+    const order = s.chapters.get("c1")?.sliceOrder;
+    expect(order).not.toContain("s-blank");
+    expect(order).toContain("s1");
+    // s1 should come after s2, s3, s4 (they are at indices 0-3, s1 is now at index 4)
+    expect(order?.indexOf("s1")).toBeGreaterThan(order?.indexOf("s4") ?? -1);
+
+    // elements belonging to s1 must still reference s1
+    expect(s.elements.get("el1")?.sliceId).toBe("s1");
+    expect(s.elements.get("el2")?.sliceId).toBe("s1");
+  });
+
   it("removes a slice and its elements", () => {
     const s = base();
     applyEvent(s, ev("element-added", { chapterId: "c1", data: { newValue: { element: { id: "el1", type: "command", name: "X", context: "App", laneId: "l1", sliceId: "s1", index: 0 } } } }));

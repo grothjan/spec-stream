@@ -405,15 +405,49 @@ const HANDLERS: Record<string, Handler> = {
   "slices-moved": (s, e) => {
     const target = str(e.data.targetChapterId) ?? e.chapterId ?? undefined;
     const source = str(e.data.sourceChapterId);
-    const slices = Array.isArray(newValue(e).slices) ? (newValue(e).slices as unknown[]) : [];
+    const nv = newValue(e);
+    const slices = Array.isArray(nv.slices) ? (nv.slices as unknown[]) : [];
     if (!target) return;
+
+    // Remove placeholder slices that were overridden (consumed) by this move.
+    const overriddenSliceIds = strArr(nv.overriddenSliceIds) ?? [];
+    const targetChapter = s.chapters.get(target);
+    if (targetChapter && overriddenSliceIds.length > 0) {
+      for (const overriddenId of overriddenSliceIds) {
+        targetChapter.sliceOrder = targetChapter.sliceOrder.filter((x) => x !== overriddenId);
+        s.slices.delete(overriddenId);
+      }
+    }
+
+    // Remove the moved slices from the source chapter order (they are being repositioned).
     for (const raw of slices) {
-      const id = str(obj(raw).id);
-      if (id && source) {
+      const sliceRaw = obj(obj(raw).slice);
+      const id = str(sliceRaw.id);
+      if (id && source && source !== target) {
         const src = s.chapters.get(source);
         if (src) src.sliceOrder = src.sliceOrder.filter((x) => x !== id);
       }
-      putSliceFromRaw(s, target, obj(raw));
+      // Upsert the slice itself (updates index and label from newValue).
+      putSliceFromRaw(s, target, sliceRaw);
+
+      // Update the sliceId on all elements that belong to this moved slice.
+      const elements = Array.isArray(obj(raw).elements) ? (obj(raw).elements as unknown[]) : [];
+      for (const elRaw of elements) {
+        const el = s.elements.get(str(obj(elRaw).id) ?? "");
+        if (el) {
+          const newSliceId = str(obj(raw).newSliceId) ?? str(sliceRaw.id);
+          if (newSliceId) el.sliceId = newSliceId;
+        }
+      }
+    }
+
+    // Re-apply the final slice order for the target chapter based on each slice's new index.
+    if (targetChapter) {
+      targetChapter.sliceOrder = [...targetChapter.sliceOrder].sort((a, b) => {
+        const ia = s.slices.get(a)?.index ?? 0;
+        const ib = s.slices.get(b)?.index ?? 0;
+        return ia - ib;
+      });
     }
   },
 
