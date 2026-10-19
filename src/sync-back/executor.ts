@@ -205,7 +205,18 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
 
     // ─── Element ──────────────────────────────────────────────────────────
     case "element.create": {
-      const res = await client.postJson(`/chapters/${enc(op.chapterId)}/elements`, {
+      // Event and automation elements must be created via the /event-reactions endpoint
+      // when they coexist in the same slice (the event-reaction pattern). The /elements
+      // endpoint rejects this combination with a 400 ValidationError. Routing both types
+      // through /event-reactions is safe universally: that endpoint accepts event/automation
+      // in any valid slice (event-reaction slices AND pure automation/event slices) and
+      // applies the same lane-type validation. Commands, information, UI, and hotspots
+      // are unaffected and continue to use /elements.
+      const isEventReactionType = op.type === "automation" || op.type === "event";
+      const elementsPath = isEventReactionType
+        ? `/chapters/${enc(op.chapterId)}/event-reactions`
+        : `/chapters/${enc(op.chapterId)}/elements`;
+      const res = await client.postJson(elementsPath, {
         name: op.name,
         type: op.type,
         lane_id: op.laneId,
@@ -250,6 +261,11 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
         new_lane_id: op.newLaneId,
         new_slice_id: op.newSliceId,
         new_index: op.newIndex,
+        // Pass force=true for event and automation elements so the API bypasses the
+        // event-reaction slice guard. sync-back reflects the local model as-is and
+        // has already validated placement; the API guardrail only applies to interactive
+        // tool usage where the caller might not intend the event-reaction pattern.
+        ...(op.elementType === "automation" || op.elementType === "event" ? { force: true } : {}),
       });
       return undefined;
 

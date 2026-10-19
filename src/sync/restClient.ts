@@ -18,7 +18,7 @@ import { RateLimiter, type RateLimiterOptions } from "../util/rateLimiter.js";
 import { redactString } from "../logging/redact.js";
 import type { Logger } from "../logging/logger.js";
 
-export type RestErrorKind = "unauthorized" | "rate_limited" | "server" | "network" | "malformed";
+export type RestErrorKind = "unauthorized" | "rate_limited" | "server" | "network" | "malformed" | "bad_request";
 
 export class RestError extends Error {
   constructor(
@@ -299,6 +299,25 @@ export class RestClient {
     if (res.status === 204 || res.headers.get("content-length") === "0") {
       return undefined as unknown as T;
     }
+    // Throw on any 4xx/5xx before attempting to parse the body. Without this check,
+    // a 400 ValidationError (e.g. adding an automation to an event-reaction slice via
+    // the wrong endpoint) is silently returned as a "successful" response because the
+    // body is valid JSON with an `error` field — the caller never sees an exception.
+    //
+    // For 4xx errors, read the response body first so we can include the API's detailed
+    // validation message in the thrown error. This is essential for agents running
+    // sync-back: they need the precise error hint (e.g. "use the add_event_reaction tool
+    // instead") to understand and fix the problem.
+    if (!res.ok) {
+      let apiMessage: string | undefined;
+      try {
+        const errBody = await res.json() as { error?: string };
+        if (errBody?.error) apiMessage = errBody.error;
+      } catch {
+        // Body was not JSON — fall through to checkStatus for a generic message.
+      }
+      this.checkStatus(method, path, res, apiMessage);
+    }
     try {
       return (await res.json()) as T;
     } catch {
@@ -306,14 +325,18 @@ export class RestClient {
     }
   }
 
-  private checkStatus(method: string, path: string, res: Response): void {
+  private checkStatus(method: string, path: string, res: Response, apiMessage?: string): void {
+    const detail = apiMessage ? ` — ${apiMessage}` : "";
+    if (res.status === 400) throw new RestError("bad_request", `${method} ${path}: unexpected status ${res.status}${detail}.`, res.status);
     if (res.status === 401) throw new RestError("unauthorized", `${method} ${path}: API key rejected (401).`, 401);
     if (res.status === 429) {
       const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
       throw new RestError("rate_limited", `${method} ${path}: rate limited (429).`, 429, retryAfterMs);
     }
     if (res.status >= 500) throw new RestError("server", `${method} ${path}: server error (${res.status}).`, res.status);
-    if (!res.ok) throw new RestError("malformed", `${method} ${path}: unexpected status ${res.status}.`, res.status);
+    if (!res.ok) {
+      throw new RestError("malformed", `${method} ${path}: unexpected status ${res.status}${detail}.`, res.status);
+    }
   }
 
   private async getJson<T>(path: string): Promise<T> {

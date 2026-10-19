@@ -185,7 +185,7 @@ export type SyncBackOperation =
   | { kind: "element.update-description"; chapterId: string; elementId: string; newDescription: string; entityDir: string }
   | { kind: "element.update-details"; chapterId: string; elementId: string; newDetails: string; entityDir: string }
   | { kind: "element.update-config"; chapterId: string; elementId: string; playFunction?: string; playType?: string; entityDir: string }
-  | { kind: "element.move"; chapterId: string; elementId: string; newLaneId: string; newSliceId: string; newIndex: number; entityDir: string }
+  | { kind: "element.move"; chapterId: string; elementId: string; newLaneId: string; newSliceId: string; newIndex: number; elementType?: string; entityDir: string }
   | { kind: "element.delete"; chapterId: string; elementId: string; entityDir: string }
   | { kind: "milestone.create"; name: string; description?: string; deadline?: string; color?: string; entityDir: string }
   | { kind: "milestone.update"; milestoneId: string; name?: string; description?: string; deadline?: string; color?: string; entityDir: string }
@@ -421,7 +421,7 @@ async function handleUpdate(
       if (data?.name !== undefined && changed("name", data.name))
         ops.push({ kind: "element.rename", chapterId, elementId: entityId, newName: data.name, entityDir });
       if (data?.laneId && data?.sliceId && (changed("laneId", data.laneId) || changed("sliceId", data.sliceId) || changed("index", data.index ?? 0)))
-        ops.push({ kind: "element.move", chapterId, elementId: entityId, newLaneId: data.laneId, newSliceId: data.sliceId, newIndex: data.index ?? 0, entityDir });
+        ops.push({ kind: "element.move", chapterId, elementId: entityId, newLaneId: data.laneId, newSliceId: data.sliceId, newIndex: data.index ?? 0, elementType: data.type, entityDir });
 
       // Content files — only emit if the specific file changed.
       const oldCH = diff.oldContentHashes ?? {};
