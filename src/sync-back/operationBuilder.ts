@@ -275,8 +275,17 @@ export async function buildOperations(opts: BuildOperationsOptions): Promise<Syn
     await processDiff(syncRootAbs, diff, ops, seen);
   }
 
-  // Sort by priority.
-  ops.sort((a, b) => PRIORITY[a.kind] - PRIORITY[b.kind]);
+  // Sort by priority. Within the same op kind, creates are ordered by their
+  // `index`: the API treats `index` on create endpoints as an insertion
+  // position (clamped to the end of the list), so creating entities in any
+  // other order produces a wrong order on the board.
+  ops.sort((a, b) => {
+    const p = PRIORITY[a.kind] - PRIORITY[b.kind];
+    if (p !== 0 || a.kind !== b.kind) return p;
+    const ia = "index" in a ? (a.index ?? 0) : 0;
+    const ib = "index" in b ? (b.index ?? 0) : 0;
+    return ia - ib;
+  });
   return ops;
 }
 

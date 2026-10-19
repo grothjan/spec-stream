@@ -692,4 +692,82 @@ describe("buildOperations", () => {
     expect(recordIdx).toBeGreaterThanOrEqual(0);
     expect(createIdx).toBeLessThan(recordIdx);
   });
+
+  // ─── Slice ordering (bug-report-slice-order.md) ────────────────────────────
+  //
+  // The API interprets `index` on POST /slices as an *insertion position*
+  // (clamped to the end of the list). Therefore the order in which slice.create
+  // ops are emitted determines the resulting board order. Ops are only sorted
+  // by PRIORITY (stable sort), so they keep the diff order — which comes from
+  // the directory walk (lexically sorted dir names on common filesystems),
+  // not from the `index` field.
+  describe("slice ordering", () => {
+    // Dir names chosen so lexical order (the walk order) is X, B, A while the
+    // modeled slice order is A (index 0), B (index 1), X (index 2).
+    const SLICE_X = "00000000-0000-4000-8000-0000000000aa";
+    const SLICE_B = "a0000000-0000-4000-8000-0000000000bb";
+    const SLICE_A = "f0000000-0000-4000-8000-0000000000cc";
+    const DIR_X = `${CHAPTER_DIR}/slices/${SLICE_X}`;
+    const DIR_B = `${CHAPTER_DIR}/slices/${SLICE_B}`;
+    const DIR_A = `${CHAPTER_DIR}/slices/${SLICE_A}`;
+
+    function setupOrderedSlices(): void {
+      writeJson(root, `${CHAPTER_DIR}/chapter.json`, {
+        id: CHAPTER_ID, name: "Ordered", context: "App", mode: "event-modeling",
+        sliceOrder: [SLICE_A, SLICE_B, SLICE_X],
+      });
+      writeJson(root, `${DIR_X}/slice.json`, { id: SLICE_X, label: "X", index: 2 });
+      writeJson(root, `${DIR_B}/slice.json`, { id: SLICE_B, label: "B", index: 1 });
+      writeJson(root, `${DIR_A}/slice.json`, { id: SLICE_A, label: "A", index: 0 });
+    }
+
+    // Diffs in lexical dir order, as computeManifestDiff emits them.
+    const diffsInWalkOrder = (): EntityDiff[] => [
+      createDiff(DIR_X, "slice"),
+      createDiff(DIR_B, "slice"),
+      createDiff(DIR_A, "slice"),
+    ];
+
+    // Regression test for the reported bug: create ops must be emitted in
+    // index order regardless of the diff (dir walk) order.
+    it("emits slice.create ops in index order, not dir order", async () => {
+      setupOrderedSlices();
+      const ops = await buildOperations({ syncRootAbs: root, diffs: diffsInWalkOrder() });
+      const labels = ops
+        .filter((o) => o.kind === "slice.create")
+        .map((o) => o.kind === "slice.create" ? o.label : "");
+      expect(labels).toEqual(["A", "B", "X"]);
+    });
+
+    // Shows *why* the op order matters: simulating the API's insert-at-index
+    // semantics on the emitted ops must produce the modeled board order.
+    it("simulated API insertion yields the modeled slice order", async () => {
+      setupOrderedSlices();
+      const ops = await buildOperations({ syncRootAbs: root, diffs: diffsInWalkOrder() });
+      const creates = ops.filter((o) => o.kind === "slice.create") as Array<
+        Extract<typeof ops[number], { kind: "slice.create" }>
+      >;
+      const board: string[] = [];
+      for (const op of creates) {
+        const pos = Math.min(op.index ?? board.length, board.length);
+        board.splice(pos, 0, op.label);
+      }
+      expect(board).toEqual(["A", "B", "X"]);
+    });
+
+    // Second half of the bug: there is no reorder path at all. Changing `index`
+    // in slice.json (or `sliceOrder` in chapter.json) produces zero operations.
+    // This documents the gap — the API's /slices/reorder endpoint is currently
+    // broken (HTTP 500), so a slice.reorder op cannot be added yet.
+    it("emits no operation when only slice index / chapter sliceOrder changes", async () => {
+      setupOrderedSlices();
+      writeJson(root, `${DIR_A}/slice.json`, { id: SLICE_A, label: "A", index: 5 });
+      const diffs: EntityDiff[] = [
+        updateDiff(DIR_A, "slice", SLICE_A, { oldFields: { id: SLICE_A, label: "A", index: 0 } }),
+        updateDiff(CHAPTER_DIR, "chapter", CHAPTER_ID, { oldFields: { id: CHAPTER_ID, name: "Ordered", context: "App" } }),
+      ];
+      const ops = await buildOperations({ syncRootAbs: root, diffs });
+      expect(ops).toEqual([]);
+    });
+  });
 });
