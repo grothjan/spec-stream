@@ -239,7 +239,11 @@ export class App {
    */
   private async catchUp(): Promise<void> {
     if (!this.rest || this.catchingUp || this.stopped) return;
+    // Snapshot the watermark NOW, before any await, so concurrent live events that advance
+    // this.lastEventCreatedAt / this.lastEventId during the async REST fetch cannot cause
+    // us to skip rows that are legitimately inside the catch-up window.
     const since = this.lastEventCreatedAt;
+    const cursorEventId = this.lastEventId;
     if (!since) return; // nothing processed yet; seed already covers initial state
 
     // Respect a previous rate-limit window — don't hammer the API.
@@ -258,7 +262,7 @@ export class App {
     try {
       const rows = await this.rest.fetchChangelogSince(since);
       let replayed = 0;
-      let latestEventId = this.lastEventId;
+      let latestEventId = cursorEventId;
       let latestCreatedAt = since;
       for (const raw of rows) {
         const row: ChangelogEventRow = {
@@ -279,16 +283,19 @@ export class App {
           continue; // skip malformed rows
         }
         if (this.recentEventIds.has(event.id)) continue; // already processed live
-        // Skip the event that matches the cursor's lastEventId - this is the one we already processed.
-        // The API returns events >= since, so there may be multiple events at the same timestamp
-        // (race conditions), but we only want to skip the exact event that was at the cursor.
-        if (event.id === this.lastEventId) {
+        // Skip the exact event that sat at the cursor position — we already processed it.
+        // Use the snapshot (`cursorEventId`), not the live field, because concurrent live
+        // events may have advanced `this.lastEventId` past this catch-up window.
+        if (event.id === cursorEventId) {
           this.log.debug("event.boundary_skip", { eventId: event.id, createdAt: event.createdAt });
           continue;
         }
-        // Skip events that are strictly before the cursor timestamp (shouldn't happen with >= since, but be safe)
-        if (this.lastEventCreatedAt && event.createdAt < this.lastEventCreatedAt) {
-          this.log.debug("event.skip_before_cursor", { eventId: event.id, createdAt: event.createdAt, cursor: this.lastEventCreatedAt });
+        // Skip events strictly before the cursor timestamp.  Use the snapshot (`since`) here
+        // for the same reason: a live event received while the REST fetch was in-flight could
+        // have moved `this.lastEventCreatedAt` forward, which would incorrectly reject events
+        // that belong to this catch-up window.
+        if (event.createdAt < since) {
+          this.log.debug("event.skip_before_cursor", { eventId: event.id, createdAt: event.createdAt, cursor: since });
           continue;
         }
         this.onEvent(event);

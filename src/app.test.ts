@@ -466,6 +466,88 @@ describe("App reconnect catch-up", () => {
     await app.stop();
   });
 
+  it("does not skip catch-up rows whose timestamp is between the cursor and a concurrently-received live event", async () => {
+    // Regression: if a live event arrives and advances this.lastEventCreatedAt *while* the
+    // REST fetch is in-flight, the old code compared event.createdAt against the updated
+    // (live) watermark and incorrectly skipped events that were legitimately in the gap.
+    //
+    // Timeline:
+    //   cursor = T1 (06:10:00)   ← persisted cursor before disconnect
+    //   live event T3 (06:34:39) ← arrives via realtime right after SUBSCRIBED fires
+    //   REST fetch returns T2 (06:34:28) ← in the gap between T1 and T3, must be replayed
+    //
+    // The bug: the skip guard used `this.lastEventCreatedAt` (now T3) instead of the
+    // snapshotted `since` (T1), so T2 < T3 was incorrectly classified as "before cursor".
+    const T1 = "2026-10-19T06:10:00.000000+00:00"; // cursor
+    const T2 = "2026-10-19T06:34:28.000000+00:00"; // missed event — must be replayed
+    const T3 = "2026-10-19T06:34:39.000000+00:00"; // live event received during fetch
+
+    const cfg = validateConfig({
+      endpoint: "https://flow.prooph-board.com/api",
+      rules: [{ id: "spec", on: "element-description-changed", run: "echo hi" }],
+    });
+    const { logger, records } = silentLogger();
+
+    // The changelog fetch is delayed so we can inject the live T3 event first.
+    let resolveChangelogFetch!: (rows: unknown[]) => void;
+    const changelogFetchGate = new Promise<unknown[]>((res) => { resolveChangelogFetch = res; });
+
+    const impl = (async (url: string) => {
+      if (url.includes("/changelog")) {
+        const rows = await changelogFetchGate;
+        return { status: 200, ok: true, headers: { get: () => null }, json: async () => rows } as unknown as Response;
+      }
+      return {
+        status: 200, ok: true, headers: { get: () => null },
+        json: async () => ({
+          supabase_url: "https://x.supabase.co", supabase_anon_key: "anon", workspace_id: "ws-1",
+          access_token: "t", expires_at: Math.floor(Date.now() / 1000) + 3600,
+          user_id: "self-user", email: "api@machine",
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const supa = reconnectSupabase();
+    const app = new App({
+      config: cfg, apiKey: "pb_x", logger, dryRun: true,
+      fetchImpl: impl, createSupabase: supa.factory,
+      rateLimiter: { minIntervalMs: 0 }, reorderWindowMs: 0,
+    });
+
+    await app.start();
+    await new Promise((r) => setTimeout(r, 5)); // initial SUBSCRIBED
+
+    // Establish the watermark at T1 by delivering a live event at T1.
+    supa.emitRow(row("cursor-event", { created_at: T1 }));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Trigger a reconnect: SUBSCRIBED fires, catchUp() starts the async REST fetch
+    // (which is now blocked on changelogFetchGate), and then the live T3 event arrives
+    // via realtime and advances this.lastEventCreatedAt to T3 — before the REST rows
+    // are processed.
+    supa.emitStatus("CLOSED");
+    supa.emitStatus("SUBSCRIBED");
+
+    // Live T3 event fires while the REST fetch is still in flight.
+    supa.emitRow(row("live-t3", { created_at: T3 }));
+    await new Promise((r) => setTimeout(r, 5)); // let onEvent(T3) run
+
+    // Now unblock the REST fetch with the T2 row (the missed event in the gap).
+    resolveChangelogFetch([row("missed-t2", { created_at: T2 })]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const catchupLog = records.find((r) => r.kind === "conn.catchup");
+    expect(catchupLog).toBeDefined();
+    // T2 must have been replayed — it is between cursor T1 and live T3.
+    expect(catchupLog).toMatchObject({ fetched: 1, replayed: 1 });
+
+    // The "missed-t2" event must not appear as skip_before_cursor.
+    const skipped = records.filter((r) => r.kind === "event.skip_before_cursor");
+    expect(skipped.map((r) => r.eventId ?? (r as Record<string, unknown>)["eventId"])).not.toContain("missed-t2");
+
+    await app.stop();
+  });
+
   it("resumes the catch-up watermark from a persisted cursor on cold start", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "spec-stream-app-cursor-"));
     try {
