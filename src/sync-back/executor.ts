@@ -11,7 +11,7 @@
 
 import type { RestClient } from "../sync/restClient.js";
 import type { SyncBackOperation } from "./operationBuilder.js";
-import { PENDING_SCENARIO_ID } from "./operationBuilder.js";
+import { PENDING_ELEMENT_ID, PENDING_SCENARIO_ID } from "./operationBuilder.js";
 
 export interface ExecuteOptions {
   /** When true, log operations but don't call the API. */
@@ -82,6 +82,18 @@ export async function executeOperations(
               const pending = operations[j]!;
               if (pending.entityDir === entityDir && "scenarioId" in pending && pending.scenarioId === PENDING_SCENARIO_ID) {
                 (pending as { scenarioId: string }).scenarioId = newId;
+              }
+            }
+          }
+
+          // For element.create: substitute the PENDING_ELEMENT_ID sentinel in
+          // follow-up update-config ops for the same entityDir (emitted by
+          // handleCreate when element.json has no id).
+          if (op.kind === "element.create") {
+            for (let j = i + 1; j < operations.length; j++) {
+              const pending = operations[j]!;
+              if (pending.entityDir === entityDir && "elementId" in pending && pending.elementId === PENDING_ELEMENT_ID) {
+                (pending as { elementId: string }).elementId = newId;
               }
             }
           }
