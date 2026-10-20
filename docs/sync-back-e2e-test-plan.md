@@ -373,20 +373,32 @@ EOF
 cat > "$ELEM_DIR/details.md" <<'EOF'
 These are the element details.
 EOF
+cat > "$ELEM_DIR/play-function.ts" <<'EOF'
+export const decide = (state, command) => [{ name: "E2E Happened", context: "IntegrationTest", payload: command.payload }];
+EOF
+cat > "$ELEM_DIR/play-type.ts" <<'EOF'
+type Payload = { title: string };
+EOF
 ```
 
 **Run:**
 ```sh
-node dist/cli.js sync-back --dry-run --verbose   # expect "Create element"
-node dist/cli.js sync-back
+# --omit-checks: element.json intentionally has no "id" (server assigns it), which
+# the model validation would otherwise reject. This also exercises the executor's
+# pending-element-id substitution for the play config op.
+node dist/cli.js sync-back --dry-run --verbose --omit-checks   # expect "Create element" AND "Update element … play config"
+node dist/cli.js sync-back --omit-checks
 ```
 
 **Verify API:**
 ```sh
 $API "$BASE/chapters/$E2E_CHAPTER_ID" | jq '.elements[] | select(.name == "E2E Element")'
 ```
-Expected: `type: "command"`, `lane_id: $E2E_LANE_ID`, `slice_id: $E2E_SLICE_ID`,
-`description: "This is the element description."`, `details: "These are the element details."`.
+Expected: `type: "command"`, `laneId: $E2E_LANE_ID`, `sliceId: $E2E_SLICE_ID`,
+`description: "This is the element description."`, `details: "These are the element details."`,
+`playType: "{ title: string }"`, `playFunction` non-null containing the function source.
+(Regression check: the play config must arrive **at create time** — earlier versions
+dropped it silently.)
 Record as `E2E_ELEMENT_ID`.
 
 **Trigger sync, verify:**
@@ -481,7 +493,7 @@ node dist/cli.js sync-back
 **Verify API:**
 ```sh
 $API "$BASE/chapters/$E2E_CHAPTER_ID" | \
-  jq --arg id "$E2E_ELEMENT_ID" '.elements[] | select(.id == $id) | .play_function'
+  jq --arg id "$E2E_ELEMENT_ID" '.elements[] | select(.id == $id) | .playFunction'
 ```
 Expected: non-null string containing the function source.
 
@@ -500,7 +512,7 @@ type Payload = { title: string }
 EOF
 ```
 
-**Run + Verify API:** Check `play_type` field. Same pattern as TASK 15.
+**Run + Verify API:** Check `playType` field. Same pattern as TASK 15.
 
 ---
 
@@ -538,7 +550,7 @@ node dist/cli.js sync-back
 **Verify API:**
 ```sh
 $API "$BASE/chapters/$E2E_CHAPTER_ID" | \
-  jq --arg id "$E2E_ELEMENT_ID" '.elements[] | select(.id == $id) | .lane_id'
+  jq --arg id "$E2E_ELEMENT_ID" '.elements[] | select(.id == $id) | .laneId'
 ```
 Expected: `E2E_LANE2_ID`
 
@@ -1016,7 +1028,7 @@ first (or they will become orphans on the board). Then:
 rm -rf "$SLICE_DIR"
 ```
 
-**Run + Verify API:** Same pattern as TASK 30 — `slice_id` must not appear in
+**Run + Verify API:** Same pattern as TASK 30 — `sliceId` must not appear in
 `GET /chapters/$E2E_CHAPTER_ID`.
 
 ---

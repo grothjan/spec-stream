@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { executeOperations } from "./executor.js";
 import type { SyncBackOperation } from "./operationBuilder.js";
-import { PENDING_SCENARIO_ID } from "./operationBuilder.js";
+import { PENDING_ELEMENT_ID, PENDING_SCENARIO_ID } from "./operationBuilder.js";
 import type { RestClient } from "../sync/restClient.js";
 
 // ─── Mock RestClient ──────────────────────────────────────────────────────────
@@ -532,6 +532,121 @@ describe("executeOperations", () => {
     expect(result.failed).toBeGreaterThanOrEqual(1);
     // The create itself failed
     expect(result.errors[0]!.operation.kind).toBe("scenario.create");
+  });
+
+  // ─── Element pending-id substitution ────────────────────────────────────────
+  // Documents the fix for "play-type.ts is silently dropped on element create":
+  // when element.json has no local id, buildOperations emits element.update-config
+  // with a PENDING_ELEMENT_ID sentinel. The executor must substitute the real
+  // element id returned by the create call — same mechanism as
+  // PENDING_SCENARIO_ID above.
+
+  it("element.create: substitutes PENDING_ELEMENT_ID with the real returned ID in follow-up update-config", async () => {
+    // GIVEN a client that returns a real element id from the create call
+    const realId = "real-element-uuid";
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      calls,
+      async postJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "POST", path, body });
+        if (path.endsWith("/elements")) return { id: realId };
+        return {};
+      },
+      async patchJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "PATCH", path, body });
+        return {};
+      },
+      async deleteReq(path: string) {
+        calls.push({ method: "DELETE", path });
+      },
+    } as unknown as RestClient & { calls: typeof calls };
+
+    const elementDir = "chapters/chap-1/elements/elem-1";
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "element.create",
+        chapterId: "chap-1",
+        name: "My Element",
+        type: "command",
+        laneId: "lane-1",
+        sliceId: "slice-1",
+        entityDir: elementDir,
+      },
+      {
+        kind: "element.update-config",
+        chapterId: "chap-1",
+        elementId: PENDING_ELEMENT_ID,
+        playType: "{ amountMl: number }",
+        entityDir: elementDir,
+      },
+    ];
+
+    // WHEN the ops are executed
+    const { dryRun, log } = makeOpts();
+    const result = await executeOperations(client, ops, { dryRun, log });
+
+    // THEN the config call targets the freshly created element, not the sentinel
+    expect(result.failed).toBe(0);
+    expect(calls[0]).toMatchObject({ method: "POST", path: "/chapters/chap-1/elements" });
+    expect(calls[1]).toMatchObject({
+      method: "POST",
+      path: `/chapters/chap-1/elements/${realId}/config`,
+      body: { play_type: "{ amountMl: number }" },
+    });
+  });
+
+  it("element.create: does not substitute update-config ops from a different entityDir", async () => {
+    // GIVEN two new elements, only one of which has a play config follow-up op
+    const realId = "element-uuid-A";
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      calls,
+      async postJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "POST", path, body });
+        if (path.endsWith("/elements")) return { id: realId };
+        return {};
+      },
+      async patchJson(path: string, body: Record<string, unknown>) {
+        calls.push({ method: "PATCH", path, body });
+        return {};
+      },
+      async deleteReq(path: string) {
+        calls.push({ method: "DELETE", path });
+      },
+    } as unknown as RestClient & { calls: typeof calls };
+
+    const elementDirA = "chapters/chap-1/elements/elem-A";
+    const elementDirB = "chapters/chap-1/elements/elem-B";
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "element.create",
+        chapterId: "chap-1",
+        name: "Element A",
+        type: "command",
+        laneId: "lane-1",
+        sliceId: "slice-1",
+        entityDir: elementDirA,
+      },
+      {
+        // This config op belongs to a different element — sentinel must NOT be
+        // replaced with element A's id
+        kind: "element.update-config",
+        chapterId: "chap-1",
+        elementId: PENDING_ELEMENT_ID,
+        playType: "{ x: number }",
+        entityDir: elementDirB,
+      },
+    ];
+
+    // WHEN executed
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+
+    // THEN the second call still carries the literal sentinel
+    expect(calls[1]).toMatchObject({
+      method: "POST",
+      path: `/chapters/chap-1/elements/${PENDING_ELEMENT_ID}/config`,
+    });
   });
 
   // ─── Chapter operations ───────────────────────────────────────────────────

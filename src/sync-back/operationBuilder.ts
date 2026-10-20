@@ -212,6 +212,14 @@ export type SyncBackOperation =
  */
 export const PENDING_SCENARIO_ID = "__pending_scenario_id__";
 
+/**
+ * Placeholder elementId used in element.update-config operations emitted alongside
+ * an element.create in the same sync-back run when element.json carries no id.
+ * The executor substitutes the real id returned by the create call before
+ * executing the follow-up op — same mechanism as {@link PENDING_SCENARIO_ID}.
+ */
+export const PENDING_ELEMENT_ID = "__pending_element_id__";
+
 // ─── Priority buckets ─────────────────────────────────────────────────────────
 
 const PRIORITY: Record<OperationKind, number> = {
@@ -642,6 +650,24 @@ function handleCreate(
           entityDir,
           localId: data.id || undefined,
         });
+
+        // The create endpoints (POST /elements, POST /event-reactions) do not
+        // accept play_type/play_function — push them via a follow-up config op.
+        // Priority ordering guarantees the create runs first. When element.json
+        // has no id the API assigns one on create; the executor substitutes
+        // PENDING_ELEMENT_ID with the returned id.
+        const pf = readFileIfExists(root, `${entityDir}/play-function.ts`);
+        const ptRaw = readFileIfExists(root, `${entityDir}/play-type.ts`);
+        if (pf !== null || ptRaw !== null) {
+          ops.push({
+            kind: "element.update-config",
+            chapterId,
+            elementId: data.id || PENDING_ELEMENT_ID,
+            playFunction: pf ?? undefined,
+            playType: ptRaw !== null ? stripPlayTypeWrapper(ptRaw) : undefined,
+            entityDir,
+          });
+        }
       }
       break;
     }

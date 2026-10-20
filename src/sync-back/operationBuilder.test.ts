@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildOperations, PENDING_SCENARIO_ID } from "./operationBuilder.js";
+import { buildOperations, PENDING_ELEMENT_ID, PENDING_SCENARIO_ID } from "./operationBuilder.js";
 import type { EntityDiff } from "./manifestDiff.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -170,6 +170,106 @@ describe("buildOperations", () => {
       kind: "element.create",
       description: "Do something",
       details: "Detailed notes",
+    });
+  });
+
+  // ─── Element create picks up play-function.ts / play-type.ts ───────────────
+  // Documents the fix for: "play-type.ts is silently dropped when an element is
+  // created via sync-back". The board API does not accept play_type /
+  // play_function on POST /elements or POST /event-reactions (see
+  // AddElementRequest / AddEventReactionRequest in the OpenAPI spec) — the only
+  // way to set them is POST /chapters/{cid}/elements/{eid}/config.
+  // handleCreate emits an element.update-config op right after element.create
+  // for the same entityDir. The executor runs ops in order, so the config lands
+  // on the freshly created element.
+
+  it("element.create is followed by element.update-config when play-function.ts and play-type.ts exist", async () => {
+    // GIVEN a new element directory that contains both play config files
+    setupElement(root);
+    writeFile(root, `${ELEMENT_DIR}/play-function.ts`, "export const decide = () => [];");
+    writeFile(root, `${ELEMENT_DIR}/play-type.ts`, "type Payload = { amountMl: number };");
+
+    // WHEN the create diff is turned into API operations
+    const ops = await buildOperations({ syncRootAbs: root, diffs: [createDiff(ELEMENT_DIR, "element")] });
+
+    // THEN a config update for the same element follows the create op.
+    // element.json carries an id, which the API stores as the element UUID
+    // (localId), so update-config can reference it directly.
+    const configOp = ops.find((o) => o.kind === "element.update-config");
+    expect(configOp).toMatchObject({
+      kind: "element.update-config",
+      chapterId: CHAPTER_ID,
+      elementId: ELEMENT_ID,
+      entityDir: ELEMENT_DIR,
+      playFunction: "export const decide = () => [];",
+      // the `type Payload = ...;` wrapper is stripped, like in the update path
+      playType: "{ amountMl: number }",
+    });
+  });
+
+  it("orders element.update-config after its element.create in the same batch", async () => {
+    // GIVEN a new element with play config files
+    setupElement(root);
+    writeFile(root, `${ELEMENT_DIR}/play-type.ts`, "type Payload = { amountMl: number };");
+
+    // WHEN ops are built
+    const ops = await buildOperations({ syncRootAbs: root, diffs: [createDiff(ELEMENT_DIR, "element")] });
+    const kinds = ops.map((o) => o.kind);
+
+    // THEN the create runs first — otherwise the config call would 404
+    expect(kinds.indexOf("element.create")).toBeGreaterThanOrEqual(0);
+    expect(kinds.indexOf("element.create")).toBeLessThan(kinds.indexOf("element.update-config"));
+  });
+
+  it("element.update-config after create carries only the fields that exist on disk", async () => {
+    // GIVEN a new element that has a play type but no play function
+    setupElement(root);
+    writeFile(root, `${ELEMENT_DIR}/play-type.ts`, "type Payload = { amountMl: number };");
+
+    // WHEN ops are built
+    const ops = await buildOperations({ syncRootAbs: root, diffs: [createDiff(ELEMENT_DIR, "element")] });
+    const configOp = ops.find((o) => o.kind === "element.update-config") as
+      | { playFunction?: string; playType?: string }
+      | undefined;
+
+    // THEN only playType is set — playFunction is absent, not an empty string,
+    // so the executor does not send a spurious field to the API
+    expect(configOp?.playType).toBe("{ amountMl: number }");
+    expect(configOp && "playFunction" in configOp && configOp.playFunction !== undefined).toBe(false);
+  });
+
+  it("element.create without play config files emits no element.update-config", async () => {
+    // GIVEN a plain new element without play-function.ts / play-type.ts
+    setupElement(root);
+
+    // WHEN ops are built
+    const ops = await buildOperations({ syncRootAbs: root, diffs: [createDiff(ELEMENT_DIR, "element")] });
+
+    // THEN only the create is emitted — no spurious config call
+    expect(ops.filter((o) => o.kind === "element.update-config")).toHaveLength(0);
+  });
+
+  it("element.update-config uses a pending-id sentinel when element.json has no id", async () => {
+    // GIVEN a new element whose element.json does not carry an id — the API
+    // will generate the UUID on create, so the config op must be rewritten by
+    // the executor after the create returns (same mechanism as
+    // PENDING_SCENARIO_ID for scenario follow-up ops)
+    setupElement(root);
+    writeJson(root, `${ELEMENT_DIR}/element.json`, {
+      type: "command", name: "My Element", context: "App",
+      laneId: LANE_ID, sliceId: SLICE_ID, index: 0,
+    });
+    writeFile(root, `${ELEMENT_DIR}/play-type.ts`, "type Payload = { amountMl: number };");
+
+    // WHEN ops are built
+    const ops = await buildOperations({ syncRootAbs: root, diffs: [createDiff(ELEMENT_DIR, "element")] });
+    const configOp = ops.find((o) => o.kind === "element.update-config");
+
+    // THEN the op carries the sentinel the executor substitutes post-create
+    expect(configOp).toMatchObject({
+      kind: "element.update-config",
+      elementId: PENDING_ELEMENT_ID,
+      entityDir: ELEMENT_DIR,
     });
   });
 
