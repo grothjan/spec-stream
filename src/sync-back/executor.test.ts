@@ -726,4 +726,69 @@ describe("executeOperations", () => {
       body: { name: "My Element", type: "command", lane_id: "lane-1", slice_id: "slice-1", id: "local-element-uuid" },
     });
   });
+
+  it("element.create sends force=true for event type", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "element.create",
+        chapterId: "chap-1",
+        name: "Order Placed",
+        type: "event",
+        laneId: "lane-system",
+        sliceId: "slice-1",
+        entityDir: "chapters/App/Ch/slices/0001_S/elements/0001_E",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters/chap-1/elements",
+      body: { name: "Order Placed", type: "event", lane_id: "lane-system", slice_id: "slice-1", force: true },
+    });
+  });
+
+  it("element.create sends force=true for automation type", async () => {
+    const client = makeMockClient();
+    const ops: SyncBackOperation[] = [
+      {
+        kind: "element.create",
+        chapterId: "chap-1",
+        name: "Send Email",
+        type: "automation",
+        laneId: "lane-user",
+        sliceId: "slice-1",
+        entityDir: "chapters/App/Ch/slices/0001_S/elements/0001_E",
+      },
+    ];
+    const { dryRun, log } = makeOpts();
+    await executeOperations(client, ops, { dryRun, log });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/chapters/chap-1/elements",
+      body: { name: "Send Email", type: "automation", lane_id: "lane-user", slice_id: "slice-1", force: true },
+    });
+  });
+
+  it.each(["command", "information", "hotspot", "ui"] as const)(
+    "element.create does NOT send force for type %s",
+    async (type) => {
+      const client = makeMockClient();
+      const ops: SyncBackOperation[] = [
+        {
+          kind: "element.create",
+          chapterId: "chap-1",
+          name: "My Element",
+          type,
+          laneId: "lane-1",
+          sliceId: "slice-1",
+          entityDir: "chapters/App/Ch/slices/0001_S/elements/0001_E",
+        },
+      ];
+      const { dryRun, log } = makeOpts();
+      await executeOperations(client, ops, { dryRun, log });
+      expect(client.calls[0]?.body).not.toHaveProperty("force");
+    },
+  );
 });
