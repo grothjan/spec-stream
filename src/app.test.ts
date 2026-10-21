@@ -369,11 +369,11 @@ describe("App reconnect catch-up", () => {
     };
   }
 
-  /** Fetch mock: serves the token endpoint and a canned /changelog page. */
+  /** Fetch mock: serves the token endpoint and a canned /changelog or /catchup page. */
   function routingFetch(changelogRows: unknown[]): { impl: typeof fetch; changelogCalls: string[] } {
     const changelogCalls: string[] = [];
     const impl = (async (url: string) => {
-      if (url.includes("/changelog")) {
+      if (url.includes("/changelog") || url.includes("/catchup")) {
         changelogCalls.push(url);
         return { status: 200, ok: true, headers: { get: () => null }, json: async () => changelogRows } as unknown as Response;
       }
@@ -493,7 +493,7 @@ describe("App reconnect catch-up", () => {
     const changelogFetchGate = new Promise<unknown[]>((res) => { resolveChangelogFetch = res; });
 
     const impl = (async (url: string) => {
-      if (url.includes("/changelog")) {
+      if (url.includes("/changelog") || url.includes("/catchup")) {
         const rows = await changelogFetchGate;
         return { status: 200, ok: true, headers: { get: () => null }, json: async () => rows } as unknown as Response;
       }
@@ -578,7 +578,7 @@ describe("App reconnect catch-up", () => {
         if (url.includes("/chapters") && !url.includes("/chapters/")) return json([]);
         if (url.includes("/milestones")) return json([]);
         if (url.includes("/snippets")) return json([]);
-        if (url.includes("/changelog")) {
+        if (url.includes("/changelog") || url.includes("/catchup")) {
           changelogCalls.push(url);
           return json([]);
         }
@@ -591,7 +591,7 @@ describe("App reconnect catch-up", () => {
         return { status: 200, ok: true, headers: { get: () => null }, json: async () => body } as unknown as Response;
       }
       const supa = reconnectSupabase();
-      const app = new App({ config: cfg, apiKey: "pb_x", logger, dryRun: true, fetchImpl: impl, createSupabase: supa.factory, rateLimiter: { minIntervalMs: 0 }, reorderWindowMs: 0 });
+      const app = new App({ config: cfg, apiKey: "pb_x", logger, dryRun: true, fetchImpl: impl, createSupabase: supa.factory, rateLimiter: { minIntervalMs: 0 }, reorderWindowMs: 0, catchUpCooldownMs: 0 });
 
       await app.start();
       await new Promise((r) => setTimeout(r, 5));

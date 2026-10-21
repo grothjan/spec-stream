@@ -46,6 +46,13 @@ export interface AppOptions {
    */
   reorderWindowMs?: number;
   /**
+   * Minimum interval between successive catchUp() calls in ms.
+   * Guards against reconnect storms where every SUBSCRIBED event would otherwise
+   * trigger a new catch-up REST call. Defaults to 30 000 ms (30 s).
+   * Pass `0` in tests to disable the cooldown.
+   */
+  catchUpCooldownMs?: number;
+  /**
    * Force rebuild the local model from REST API, ignoring any existing local state.
    * Defaults to false (use local model if available).
    */
@@ -66,6 +73,7 @@ export class App {
   private readonly writeOutput: ((stream: "stdout" | "stderr", text: string) => void) | null;
   private readonly rateLimiter: RateLimiter | RateLimiterOptions | undefined;
   private readonly reorderWindowMs: number | undefined;
+  private readonly catchUpCooldownMs: number;
 
   private realtime?: RealtimeClient;
   private token?: RealtimeToken;
@@ -85,6 +93,8 @@ export class App {
   private hasSubscribed = false;
   /** Guards against overlapping catch-up runs. */
   private catchingUp = false;
+  /** Timestamp (Date.now()) of the last catch-up attempt, for the cooldown guard. */
+  private lastCatchUpAt = 0;
   /** Timestamp (Date.now()) until which catch-up is rate-limited and must not be retried. */
   private catchupRateLimitedUntil = 0;
 
@@ -105,6 +115,7 @@ export class App {
         : opts.writeOutput;
     this.rateLimiter = opts.rateLimiter;
     this.reorderWindowMs = opts.reorderWindowMs;
+    this.catchUpCooldownMs = opts.catchUpCooldownMs ?? 30_000;
     this.rebuild = opts.rebuild ?? false;
     this.router = Router.fromConfig(this.config);
     this.scheduler = new Scheduler({
@@ -158,6 +169,7 @@ export class App {
     try {
       this.token = await this.obtainToken();
       await this.realtime?.updateToken(this.token.accessToken);
+      this.rest?.setAccessToken(this.token.accessToken);
       this.log.debug("auth.renewed", { expiresAt: Math.floor(this.token.expiresAtMs / 1000) });
       this.scheduleRenewal();
     } catch (err) {
@@ -236,6 +248,13 @@ export class App {
    * On 429 Too Many Requests: respects the `Retry-After` header (or falls back to 60 s)
    * and refuses to re-attempt until that window passes. The live realtime connection is
    * NOT closed — only the catch-up poll is suppressed until the rate limit clears.
+   *
+   * **Cooldown guard:** at most one catch-up per `catchUpCooldownMs` (default 30 s).
+   * Reconnect storms (many SUBSCRIBED events in quick succession) are collapsed into a
+   * single REST call, dramatically reducing Supabase usage when connections are unstable.
+   * Events that arrive during the cooldown window are not lost — the realtime channel
+   * delivers them live the moment the socket reconnects, and the next catch-up (once the
+   * cooldown expires) will fill any remaining gap.
    */
   private async catchUp(): Promise<void> {
     if (!this.rest || this.catchingUp || this.stopped) return;
@@ -246,8 +265,21 @@ export class App {
     const cursorEventId = this.lastEventId;
     if (!since) return; // nothing processed yet; seed already covers initial state
 
-    // Respect a previous rate-limit window — don't hammer the API.
+    // ── Cooldown guard ──────────────────────────────────────────────────────
+    // Prevent catch-up storms: a rapid sequence of SUBSCRIBED events (e.g. after a
+    // network blip) must not fan out into one REST call per event.
     const now = Date.now();
+    if (this.catchUpCooldownMs > 0 && now - this.lastCatchUpAt < this.catchUpCooldownMs) {
+      const remainingMs = this.catchUpCooldownMs - (now - this.lastCatchUpAt);
+      this.log.debug("conn.catchup_skipped", {
+        reason: "cooldown",
+        remainingMs,
+        cooldownMs: this.catchUpCooldownMs,
+      });
+      return;
+    }
+
+    // Respect a previous rate-limit window — don't hammer the API.
     if (now < this.catchupRateLimitedUntil) {
       const remainingMs = this.catchupRateLimitedUntil - now;
       this.log.warn("conn.catchup_rate_limited", {
@@ -257,6 +289,10 @@ export class App {
       });
       return;
     }
+
+    // Record the attempt time BEFORE the async work so that a second SUBSCRIBED
+    // event arriving while the fetch is in-flight also hits the cooldown guard.
+    this.lastCatchUpAt = now;
 
     this.catchingUp = true;
     try {
@@ -449,12 +485,16 @@ export class App {
     }
 
     // Shared REST client (same pb_ key) for projection seeding and reconnect catch-up.
+    // Pass the realtime access token so fetchChangelogSince uses the lightweight /catchup
+    // endpoint (JWT auth, zero extra Supabase calls) instead of /changelog (pb_ key auth).
     this.rest = new RestClient({
       endpoint: this.config.endpoint,
       apiKey: this.apiKey,
       fetchImpl: this.fetchImpl,
       rateLimiter: this.rateLimiter,
       logger: this.log,
+      accessToken: this.token.accessToken,
+      workspaceId: this.token.workspaceId,
     });
 
     // Seed the local-sync projection (read replica) before live events start flowing, so

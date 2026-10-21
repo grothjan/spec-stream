@@ -52,6 +52,18 @@ export interface RestClientOptions {
    * Logger for debug output (URL, method, status). API keys are always redacted.
    */
   logger?: Logger;
+  /**
+   * Short-lived Supabase access token issued by /api/realtime-token. When provided,
+   * `fetchChangelogSince` calls the lightweight `/catchup` endpoint with this JWT
+   * instead of the heavier `/changelog` tool-call path. Updated via `setAccessToken`
+   * on each token renewal.
+   */
+  accessToken?: string;
+  /**
+   * Workspace ID — required when `accessToken` is set so the `/catchup` endpoint
+   * can explicitly verify workspace membership (defence-in-depth alongside RLS).
+   */
+  workspaceId?: string;
 }
 
 /** A full chapter as returned by GET /chapters/{id}. */
@@ -126,6 +138,10 @@ export class RestClient {
   private readonly fetchImpl: typeof fetch;
   private readonly limiter: RateLimiter;
   private readonly logger?: Logger;
+  /** Short-lived JWT from /api/realtime-token. Used for /catchup calls. */
+  private accessToken: string | undefined;
+  /** Workspace ID, sent as an explicit parameter to /catchup for defence-in-depth. */
+  private readonly workspaceId: string | undefined;
 
   constructor(opts: RestClientOptions) {
     this.base = opts.endpoint.replace(/\/+$/, "");
@@ -136,6 +152,16 @@ export class RestClient {
         ? opts.rateLimiter
         : new RateLimiter(opts.rateLimiter);
     this.logger = opts.logger;
+    this.accessToken = opts.accessToken;
+    this.workspaceId = opts.workspaceId;
+  }
+
+  /**
+   * Update the realtime access token after a renewal. Called by App when the token
+   * is refreshed so subsequent `fetchChangelogSince` calls use the new JWT.
+   */
+  setAccessToken(token: string): void {
+    this.accessToken = token;
   }
 
   /**
@@ -198,6 +224,11 @@ export class RestClient {
    * through results up to `maxEvents`. Used to replay the gap after a realtime disconnect.
    * Returns raw rows in the `ChangelogEventRow` shape (the API's `ChangelogEvent`), which
    * the caller normalizes via `normalizeRow`.
+   *
+   * When an `accessToken` is available (set at construction or via `setAccessToken`) this
+   * calls the lightweight `GET /catchup` endpoint with the realtime JWT — no api_keys
+   * lookup, no machine-user sign-in, just one Supabase query per page. Falls back to
+   * `GET /changelog` with the pb_ key when no access token is set.
    */
   async fetchChangelogSince(
     since: string,
@@ -207,6 +238,10 @@ export class RestClient {
     const maxEvents = opts.maxEvents ?? 5000;
     const out: ApiChangelogRow[] = [];
     let offset = 0;
+    // Use /catchup (JWT auth, 0 extra Supabase round-trips) when the access token is
+    // available; fall back to /changelog (pb_ key auth) otherwise.
+    const useCatchup = !!(this.accessToken && this.workspaceId);
+    const path = useCatchup ? "/catchup" : "/changelog";
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const q = new URLSearchParams({
@@ -214,7 +249,11 @@ export class RestClient {
         limit: String(pageSize),
         offset: String(offset),
       });
-      const page = await this.getJson<ApiChangelogRow[]>(`/changelog?${q.toString()}`);
+      if (useCatchup) {
+        // /catchup requires an explicit workspace_id for defence-in-depth server-side.
+        q.set("workspace_id", this.workspaceId!);
+      }
+      const page = await this.getJson<ApiChangelogRow[]>(`${path}?${q.toString()}`, this.accessToken);
       out.push(...page);
       if (page.length < pageSize || out.length >= maxEvents) break;
       offset += pageSize;
@@ -339,15 +378,16 @@ export class RestClient {
     }
   }
 
-  private async getJson<T>(path: string): Promise<T> {
+  private async getJson<T>(path: string, bearerToken?: string): Promise<T> {
     const url = `${this.base}${path}`;
     const startTime = Date.now();
     await this.limiter.throttle();
     let res: Response;
+    const token = bearerToken ?? this.apiKey;
     try {
       res = await this.fetchImpl(url, {
         method: "GET",
-        headers: { authorization: `Bearer ${this.apiKey}`, accept: "application/json" },
+        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       });
     } catch (err) {
       const duration = Date.now() - startTime;
