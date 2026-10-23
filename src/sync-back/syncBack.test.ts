@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSyncBack } from "./syncBack.js";
-import { computeDiskHash } from "./manifestDiff.js";
 import {
+  buildManifestFromTree,
   loadManifest,
   saveManifest,
   syncBackIdsPath,
@@ -83,6 +83,34 @@ function writeSyncManifest(projectDir: string, entities: SyncManifest["entities"
     updatedAt: new Date().toISOString(),
     entities,
   });
+}
+
+/**
+ * Simulate the sync process having absorbed a snippet: write the flat snippet
+ * files AND a sync-manifest entry produced by {@link buildManifestFromTree} —
+ * exactly what the projection does after rendering a snippet changelog event.
+ *
+ * This matters for parity: sync writes the manifest hash via
+ * `buildManifestFromTree` while sync-back recomputes it via `computeDiskHash`.
+ * If those two implementations disagree for the flat html-snippet layout
+ * (file set, ordering, whitespace), the hash never matches and every
+ * `sync-back` run emits spurious updates in a synced workspace.
+ */
+function seedSyncedSnippet(
+  projectDir: string,
+  slug: string,
+  json: Record<string, unknown>,
+  html: string,
+): void {
+  const tree = new Map<string, string>([
+    [`html-snippets/${slug}.json`, JSON.stringify(json, null, 2)],
+    [`html-snippets/${slug}.html`, html],
+  ]);
+  mkdirSync(join(modelDir(projectDir), "html-snippets"), { recursive: true });
+  for (const [rel, content] of tree) {
+    writeFileSync(join(modelDir(projectDir), rel), content, "utf8");
+  }
+  writeSyncManifest(projectDir, buildManifestFromTree(tree).entities);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -166,17 +194,17 @@ describe("runSyncBack — html-snippet GC regression", () => {
 
   // ─── Parallel sync: snippet already absorbed into sync-manifest ───────────
 
-  it("emits no operations for an unchanged snippet already tracked in sync-manifest", async () => {
-    writeHtmlSnippet(projectDir, "my-snippet");
-    // Simulate the sync process having absorbed the create event: the snippet
-    // is known via sync-manifest.json with a matching content hash.
-    writeSyncManifest(projectDir, {
-      "html-snippets/my-snippet": {
-        id: "my-snippet",
-        hash: computeDiskHash(modelDir(projectDir), "html-snippets/my-snippet", "html-snippet"),
-        fields: { slug: "my-snippet", name: "My Snippet" },
-      },
-    });
+  it("recognizes a snippet hash written by sync as unchanged (hash parity)", async () => {
+    // Intention: verify that a manifest hash written by the sync process
+    // (buildManifestFromTree) matches the hash sync-back recomputes from disk
+    // (computeDiskHash) for the flat html-snippet layout. If the two diverge,
+    // every synced workspace produces spurious snippet updates on each run.
+    seedSyncedSnippet(
+      projectDir,
+      "my-snippet",
+      { slug: "my-snippet", name: "My Snippet" },
+      "<div>Hello</div>",
+    );
 
     const calls: Array<{ method: string; url: string; body?: unknown }> = [];
     const result = await runSyncBack({
@@ -191,15 +219,14 @@ describe("runSyncBack — html-snippet GC regression", () => {
   });
 
   it("pushes a changed snippet as PATCH /snippets/<slug>, not a duplicate create", async () => {
-    writeHtmlSnippet(projectDir, "my-snippet");
-    writeSyncManifest(projectDir, {
-      "html-snippets/my-snippet": {
-        id: "my-snippet",
-        hash: computeDiskHash(modelDir(projectDir), "html-snippets/my-snippet", "html-snippet"),
-        fields: { slug: "my-snippet", name: "My Snippet" },
-      },
-    });
-    // Local change to the snippet's HTML content.
+    // Snippet known via sync-manifest (parallel sync absorbed the create),
+    // then edited locally — the diff must surface as an update, not a create.
+    seedSyncedSnippet(
+      projectDir,
+      "my-snippet",
+      { slug: "my-snippet", name: "My Snippet" },
+      "<div>Hello</div>",
+    );
     writeFileSync(
       join(modelDir(projectDir), "html-snippets/my-snippet.html"),
       "<div>Changed</div>",
