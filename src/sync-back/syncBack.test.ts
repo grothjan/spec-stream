@@ -3,7 +3,14 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSyncBack } from "./syncBack.js";
-import { loadManifest, syncBackIdsPath } from "./manifest.js";
+import { computeDiskHash } from "./manifestDiff.js";
+import {
+  loadManifest,
+  saveManifest,
+  syncBackIdsPath,
+  syncManifestPath,
+  type SyncManifest,
+} from "./manifest.js";
 import { API_KEY_ENV } from "../config/load.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,6 +55,35 @@ function writeHtmlSnippet(projectDir: string, slug: string): void {
 
 const modelDir = (projectDir: string) => join(projectDir, ".spec-stream/model");
 const configPath = (projectDir: string) => join(projectDir, "proophboard.spec-stream.json");
+
+/** A fetch mock that records every request and answers 200 {} by default. */
+function makeFetch(
+  calls: Array<{ method: string; url: string; body?: unknown }>,
+  handler?: (call: { method: string; url: string; body?: unknown }) => Response,
+): typeof fetch {
+  return (async (input: unknown, init?: RequestInit) => {
+    const call = {
+      method: init?.method ?? "GET",
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    };
+    calls.push(call);
+    if (handler) return handler(call);
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+}
+
+/** Write a sync-manifest.json as the sync process would after absorbing an entity. */
+function writeSyncManifest(projectDir: string, entities: SyncManifest["entities"]): void {
+  saveManifest(syncManifestPath(modelDir(projectDir)), {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    entities,
+  });
+}
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -126,5 +162,104 @@ describe("runSyncBack — html-snippet GC regression", () => {
     expect(second.operationCount).toBe(0);
     expect(second.failed).toBe(0);
     expect(posts).toHaveLength(1); // no second create call
+  });
+
+  // ─── Parallel sync: snippet already absorbed into sync-manifest ───────────
+
+  it("emits no operations for an unchanged snippet already tracked in sync-manifest", async () => {
+    writeHtmlSnippet(projectDir, "my-snippet");
+    // Simulate the sync process having absorbed the create event: the snippet
+    // is known via sync-manifest.json with a matching content hash.
+    writeSyncManifest(projectDir, {
+      "html-snippets/my-snippet": {
+        id: "my-snippet",
+        hash: computeDiskHash(modelDir(projectDir), "html-snippets/my-snippet", "html-snippet"),
+        fields: { slug: "my-snippet", name: "My Snippet" },
+      },
+    });
+
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const result = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl: makeFetch(calls),
+      omitChecks: true,
+    });
+
+    expect(result.operationCount).toBe(0);
+    expect(calls).toHaveLength(0); // no API traffic at all
+  });
+
+  it("pushes a changed snippet as PATCH /snippets/<slug>, not a duplicate create", async () => {
+    writeHtmlSnippet(projectDir, "my-snippet");
+    writeSyncManifest(projectDir, {
+      "html-snippets/my-snippet": {
+        id: "my-snippet",
+        hash: computeDiskHash(modelDir(projectDir), "html-snippets/my-snippet", "html-snippet"),
+        fields: { slug: "my-snippet", name: "My Snippet" },
+      },
+    });
+    // Local change to the snippet's HTML content.
+    writeFileSync(
+      join(modelDir(projectDir), "html-snippets/my-snippet.html"),
+      "<div>Changed</div>",
+      "utf8",
+    );
+
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const result = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl: makeFetch(calls),
+      omitChecks: true,
+    });
+
+    expect(result.failed).toBe(0);
+    expect(result.executed).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("PATCH");
+    expect(calls[0]!.url).toContain("/snippets/my-snippet");
+    expect(calls[0]!.body).toMatchObject({ snippet: "<div>Changed</div>" });
+  });
+
+  // ─── GC still removes genuinely stale entries ─────────────────────────────
+
+  it("GC removes a sync-back-ids entry for an externally deleted snippet", async () => {
+    // A live snippet to create (keeps the run in the persist/GC phase) …
+    writeHtmlSnippet(projectDir, "live-snippet");
+    // … and a stale entry for a snippet whose files were deleted externally
+    // (e.g. board-side deletion processed by sync). Neither in sync-manifest
+    // nor on disk → the GC must drop it.
+    saveManifest(syncBackIdsPath(modelDir(projectDir)), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        "html-snippets/dead-snippet": { id: "dead-snippet", hash: "stale" },
+      },
+    });
+
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const result = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl: makeFetch(calls, ({ method, url }) =>
+        method === "POST" && url.endsWith("/snippets")
+          ? new Response(JSON.stringify({ slug: "live-snippet" }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          : new Response(JSON.stringify({}), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+      ),
+      omitChecks: true,
+    });
+
+    expect(result.failed).toBe(0);
+
+    const ids = loadManifest(syncBackIdsPath(modelDir(projectDir)));
+    expect(ids.entities["html-snippets/live-snippet"]).toBeDefined();
+    expect(ids.entities["html-snippets/dead-snippet"]).toBeUndefined();
   });
 });
