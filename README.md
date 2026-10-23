@@ -363,8 +363,7 @@ incrementally. Restarts catch up on missed events automatically.
     [slug].json
 ```
 
-Every `.json` carries the raw values (names, ids). Directory names use sanitized
-slugs — safe for all filesystems and easy to grep. UUIDs are not embedded in paths;
+Every `.json` carries the raw values (names, ids). Directory names use UUIDs. 
 `uuid-index.json` maps every entity UUID to its directory for O(1) resolution. Use
 `@proophboard/spec-stream sync --rebuild` to force a full rebuild from the REST API at any time.
 
