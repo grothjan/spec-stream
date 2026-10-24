@@ -273,6 +273,109 @@ describe("buildOperations", () => {
     });
   });
 
+  // ─── Element content-file deletions ───────────────────────────────────────
+  // A file recorded in the manifest that no longer exists on disk was deleted
+  // locally — sync-back must emit the corresponding clear operation instead of
+  // silently dropping the deletion (regression test for the play-function
+  // resurrection bug).
+
+  it("deleting play-function.ts emits element.update-config with playFunction: null", async () => {
+    setupElement(root); // no play-function.ts on disk
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldContentHashes: { "play-function.ts": "deadbeef" },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const configOp = ops.find((o) => o.kind === "element.update-config") as
+      | { playFunction?: string | null; playType?: string | null }
+      | undefined;
+    expect(configOp).toMatchObject({
+      kind: "element.update-config",
+      chapterId: CHAPTER_ID,
+      elementId: ELEMENT_ID,
+      playFunction: null,
+    });
+  });
+
+  it("deleting play-type.ts emits element.update-config with playType: null", async () => {
+    setupElement(root);
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldContentHashes: { "play-type.ts": "deadbeef" },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const configOp = ops.find((o) => o.kind === "element.update-config") as
+      | { playFunction?: string | null; playType?: string | null }
+      | undefined;
+    expect(configOp).toMatchObject({
+      kind: "element.update-config",
+      chapterId: CHAPTER_ID,
+      elementId: ELEMENT_ID,
+      playType: null,
+    });
+  });
+
+  it("deleting one play file while the other changed clears only the deleted field", async () => {
+    setupElement(root);
+    writeFile(root, `${ELEMENT_DIR}/play-type.ts`, "type Payload = { amountMl: number };");
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldContentHashes: { "play-function.ts": "deadbeef" },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const configOp = ops.find((o) => o.kind === "element.update-config") as
+      | { playFunction?: string | null; playType?: string | null }
+      | undefined;
+    expect(configOp).toMatchObject({
+      kind: "element.update-config",
+      playFunction: null,                    // deleted → cleared
+      playType: "{ amountMl: number }",      // present → pushed (wrapper stripped)
+    });
+  });
+
+  it("absent play files that were never tracked emit no element.update-config", async () => {
+    setupElement(root);
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID)];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    expect(ops.filter((o) => o.kind === "element.update-config")).toHaveLength(0);
+  });
+
+  it("deleting description.md emits element.update-description with empty string", async () => {
+    setupLane(root);
+    writeJson(root, `${ELEMENT_DIR}/element.json`, {
+      id: ELEMENT_ID, type: "command", name: "My Element", context: "App",
+      laneId: LANE_ID, sliceId: SLICE_ID, index: 0,
+    });
+    writeFile(root, `${ELEMENT_DIR}/details.md`, "Detailed notes");
+    // no description.md on disk, but tracked in the manifest
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldContentHashes: { "description.md": "deadbeef" },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const descOp = ops.find((o) => o.kind === "element.update-description");
+    expect(descOp).toMatchObject({
+      kind: "element.update-description",
+      elementId: ELEMENT_ID,
+      newDescription: "",
+    });
+  });
+
+  it("deleting details.md emits element.update-details with empty string", async () => {
+    setupLane(root);
+    writeJson(root, `${ELEMENT_DIR}/element.json`, {
+      id: ELEMENT_ID, type: "command", name: "My Element", context: "App",
+      laneId: LANE_ID, sliceId: SLICE_ID, index: 0,
+    });
+    writeFile(root, `${ELEMENT_DIR}/description.md`, "Do something");
+    const diffs: EntityDiff[] = [updateDiff(ELEMENT_DIR, "element", ELEMENT_ID, {
+      oldContentHashes: { "details.md": "deadbeef" },
+    })];
+    const ops = await buildOperations({ syncRootAbs: root, diffs });
+    const detailsOp = ops.find((o) => o.kind === "element.update-details");
+    expect(detailsOp).toMatchObject({
+      kind: "element.update-details",
+      elementId: ELEMENT_ID,
+      newDetails: "",
+    });
+  });
+
   // ─── Slice create ──────────────────────────────────────────────────────────
   it("create diff maps to slice.create", async () => {
     setupSlice(root);

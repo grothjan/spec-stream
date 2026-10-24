@@ -264,7 +264,10 @@ async function executeOne(client: RestClient, op: SyncBackOperation): Promise<st
     case "element.update-config":
       await client.postJson(`/chapters/${enc(op.chapterId)}/elements/${enc(op.elementId)}/config`, {
         ...(op.playFunction !== undefined && { play_function: op.playFunction }),
-        ...(op.playType !== undefined && { play_type: op.playType }),
+        // playFunction accepts null to clear the field; play_type rejects null
+        // server-side ("Cannot read properties of null (reading 'trimEnd')") —
+        // an empty string clears it instead.
+        ...(op.playType !== undefined && { play_type: op.playType ?? "" }),
       });
       return undefined;
 

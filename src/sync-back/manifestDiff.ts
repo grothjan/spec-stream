@@ -120,8 +120,18 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
       // conservatively treat it as changed so we don't silently skip updates.
       const diskHash = computeDiskHash(syncRootAbs, entityDir, kind);
       if (manifestEntry.hash && diskHash === manifestEntry.hash) {
-        // Content unchanged — skip. No API call needed.
-        continue;
+        // The entity-level hash only covers files that exist NOW. A content file
+        // recorded in the merged manifest (union of sync-manifest + sync-back-ids)
+        // may be gone from disk while the hash still matches an older snapshot —
+        // e.g. a play-function.ts pushed by sync-back and then deleted before sync
+        // processed the board events. Deleting it restores the pre-existing file
+        // set, so the entity looks unchanged while a tracked file is actually
+        // missing. Surface it as an update so operationBuilder can emit the
+        // clear/removal ops.
+        const trackedFileMissing = Object.keys(manifestEntry.contentHashes ?? {}).some(
+          (f) => !existsSync(join(syncRootAbs, entityDir, f)),
+        );
+        if (!trackedFileMissing) continue;
       }
 
       diffs.push({
