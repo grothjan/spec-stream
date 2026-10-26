@@ -295,6 +295,63 @@ describe("computeManifestDiff", () => {
     expect(elementDiff?.oldContentHashes?.["play-function.ts"]).toBe("deadbeef");
   });
 
+  it("skips an entity whose sync-back-ids entry supersedes an unchanged sync-manifest entry", () => {
+    // Reproduces the stale-manifest re-update bug:
+    // sync-back pushed a rename and wrote a fresh entry (current disk hash) into
+    // sync-back-ids.json, recording the sync-manifest hash it superseded as
+    // baseHash. sync has not run since, so sync-manifest.json still holds the
+    // stale pre-push entry. Without baseHash the stale sync-manifest entry would
+    // win the merge and the same update would be re-emitted on every run.
+    writeFullModel(root);
+    const diskHash = computeDiskHash(root, ELEMENT_DIR, "element");
+    writeManifest(root, {
+      [ELEMENT_DIR]: { id: ELEMENT_ID, hash: "stale-hash" }, // pre-push state
+    });
+    saveManifest(syncBackIdsPath(root), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [ELEMENT_DIR]: { id: ELEMENT_ID, hash: diskHash, baseHash: "stale-hash" },
+      },
+    });
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+    expect(diffs.find((d) => d.entityDir === ELEMENT_DIR)).toBeUndefined();
+  });
+
+  it("lets sync-manifest win once it advanced past the recorded baseHash", () => {
+    // Same setup, but sync HAS pulled newer board state since the push: the
+    // sync-manifest hash no longer matches the recorded baseHash, so the
+    // sync-back-ids entry is stale and must not shadow the newer manifest entry.
+    writeFullModel(root);
+    writeManifest(root, {
+      [ELEMENT_DIR]: {
+        id: ELEMENT_ID,
+        hash: "board-hash",
+        fields: { name: "Board Name" },
+      },
+    });
+    saveManifest(syncBackIdsPath(root), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [ELEMENT_DIR]: {
+          id: ELEMENT_ID,
+          hash: computeDiskHash(root, ELEMENT_DIR, "element"),
+          baseHash: "stale-hash", // superseded hash — does NOT match "board-hash"
+          fields: { name: "Old Pushed Name" },
+        },
+      },
+    });
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+    const elementDiff = diffs.find((d) => d.entityDir === ELEMENT_DIR);
+    // Disk differs from the newer manifest hash → update diff…
+    expect(elementDiff?.status).toBe("update");
+    // …and the diff must carry the sync-manifest fields, not the stale ones.
+    expect(elementDiff?.oldFields?.name).toBe("Board Name");
+  });
+
   it("still skips unchanged entities when every tracked content file exists on disk", () => {
     writeFullModel(root);
     // A tracked content file that still exists must not defeat the hash-match skip.

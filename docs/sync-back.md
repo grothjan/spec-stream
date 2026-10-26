@@ -92,11 +92,13 @@ Two files live alongside `sync-state.json` in `.spec-stream/`:
 | File | Written by | Contains |
 |---|---|---|
 | `sync-manifest.json` | `spec-stream run` (sync process) | All entities currently on the board — authoritative |
-| `sync-back-ids.json` | `spec-stream sync-back` | Ids of entities created locally since the last sync pass |
+| `sync-back-ids.json` | `spec-stream sync-back` | Ids and post-push state of entities created or updated locally since the last sync pass |
 
 `sync-back` reads both and merges them. `spec-stream run` is the primary writer;
-`sync-back-ids.json` is a lightweight bridge for newly created entities until sync
-absorbs them on its next pass.
+`sync-back-ids.json` is a lightweight bridge until sync absorbs the changes on its
+next pass. Each sync-back-ids entry records `baseHash` — the sync-manifest hash it
+superseded — so the entry only shadows the manifest while that manifest entry is
+unchanged; once sync pulls the corresponding board events, the manifest wins again.
 
 These files are written atomically (write to `.tmp`, then rename) so concurrent sync
 and sync-back processes cannot corrupt them — each file has exactly one writer.
