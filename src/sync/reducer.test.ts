@@ -262,6 +262,37 @@ describe("element events", () => {
     expect(s.elements.get("el1")?.playType).toBe("type Input = { orderId: string }");
   });
 
+  it("element-config-changed clears playFunction/playType on null", () => {
+    const s = base();
+    withElement(s, "el1", "Place Order");
+    applyEvent(s, ev("element-config-changed", { elementId: "el1", data: { newValue: { playFunction: "fn()", playType: "type T = void" } } }));
+    expect(s.elements.get("el1")?.playFunction).toBe("fn()");
+    expect(s.elements.get("el1")?.playType).toBe("type T = void");
+
+    // The board sends null when a play config field is cleared.
+    applyEvent(s, ev("element-config-changed", { elementId: "el1", data: { newValue: { playFunction: null, playType: null } } }));
+    expect(s.elements.get("el1")?.playFunction).toBeUndefined();
+    expect(s.elements.get("el1")?.playType).toBeUndefined();
+  });
+
+  it("element-config-changed with unrelated keys leaves play config untouched", () => {
+    const s = base();
+    withElement(s, "el1", "Place Order");
+    applyEvent(s, ev("element-config-changed", { elementId: "el1", data: { newValue: { playFunction: "fn()" } } }));
+    applyEvent(s, ev("element-config-changed", { elementId: "el1", data: { newValue: { icon: "star" } } }));
+    expect(s.elements.get("el1")?.playFunction).toBe("fn()");
+    expect(s.elements.get("el1")?.icon).toBe("star");
+  });
+
+  it("element-config-synced clears playFunction/playType on null", () => {
+    const s = base();
+    withElement(s, "el1", "Ship Order");
+    applyEvent(s, ev("element-config-synced", { elementId: "el1", data: { newValue: { playFunction: "fn()", playType: "type T = number" } } }));
+    applyEvent(s, ev("element-config-synced", { elementId: "el1", data: { newValue: { playFunction: null } } }));
+    expect(s.elements.get("el1")?.playFunction).toBeUndefined();
+    expect(s.elements.get("el1")?.playType).toBe("type T = number"); // untouched
+  });
+
   it("element-config-changed still applies icon/noArrow fields alongside play fields", () => {
     const s = base();
     withElement(s, "el1", "Place Order");

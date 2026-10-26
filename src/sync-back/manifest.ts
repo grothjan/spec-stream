@@ -140,8 +140,21 @@ export function mergeManifests(
     ...syncManifest.entities,
   };
   for (const [dir, syncBackEntry] of Object.entries(syncBackIds.entities)) {
-    if (syncBackEntry.extra && merged[dir] && !merged[dir].extra) {
-      merged[dir] = { ...merged[dir], extra: syncBackEntry.extra };
+    const mergedEntry = merged[dir];
+    if (!mergedEntry) continue;
+    if (syncBackEntry.extra && !mergedEntry.extra) {
+      merged[dir] = { ...mergedEntry, extra: syncBackEntry.extra };
+    }
+    // Union contentHashes from both manifests: sync-back-ids may track content
+    // files that sync-manifest doesn't know yet (e.g. a play-function.ts pushed
+    // by sync-back whose resulting board events sync has not yet processed).
+    // Without the union, deleting such a file is invisible to the diff — the
+    // merged entry would look identical to the disk state.
+    if (syncBackEntry.contentHashes) {
+      merged[dir] = {
+        ...merged[dir],
+        contentHashes: { ...syncBackEntry.contentHashes, ...mergedEntry.contentHashes },
+      };
     }
   }
   return merged;

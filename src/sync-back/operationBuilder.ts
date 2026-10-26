@@ -192,7 +192,7 @@ export type SyncBackOperation =
   | { kind: "element.rename"; chapterId: string; elementId: string; newName: string; entityDir: string }
   | { kind: "element.update-description"; chapterId: string; elementId: string; newDescription: string; entityDir: string }
   | { kind: "element.update-details"; chapterId: string; elementId: string; newDetails: string; entityDir: string }
-  | { kind: "element.update-config"; chapterId: string; elementId: string; playFunction?: string; playType?: string; entityDir: string }
+  | { kind: "element.update-config"; chapterId: string; elementId: string; playFunction?: string | null; playType?: string | null; entityDir: string }
   | { kind: "element.move"; chapterId: string; elementId: string; newLaneId: string; newSliceId: string; newIndex: number; elementType?: string; entityDir: string }
   | { kind: "element.delete"; chapterId: string; elementId: string; entityDir: string }
   | { kind: "milestone.create"; name: string; description?: string; deadline?: string; color?: string; entityDir: string }
@@ -468,18 +468,25 @@ async function handleUpdate(
         if (!oldH) return true; // no prior hash → assume changed
         return hashContent(content) !== oldH;
       };
+      // A file recorded in the manifest that no longer exists on disk was deleted
+      // locally — emit an update so the corresponding board field gets cleared.
+      const fileRemoved = (file: string, content: string | null): boolean =>
+        content === null && oldCH[file] !== undefined;
 
       const desc = readMarkdownIfExists(root, `${entityDir}/description.md`);
-      if (contentChanged("description.md", desc))
-        ops.push({ kind: "element.update-description", chapterId, elementId: entityId, newDescription: desc!, entityDir });
+      if (contentChanged("description.md", desc) || fileRemoved("description.md", desc))
+        ops.push({ kind: "element.update-description", chapterId, elementId: entityId, newDescription: desc ?? "", entityDir });
       const details = readMarkdownIfExists(root, `${entityDir}/details.md`);
-      if (contentChanged("details.md", details))
-        ops.push({ kind: "element.update-details", chapterId, elementId: entityId, newDetails: details!, entityDir });
+      if (contentChanged("details.md", details) || fileRemoved("details.md", details))
+        ops.push({ kind: "element.update-details", chapterId, elementId: entityId, newDetails: details ?? "", entityDir });
       const pf = readFileIfExists(root, `${entityDir}/play-function.ts`);
       const ptRaw = readFileIfExists(root, `${entityDir}/play-type.ts`);
       const pt = ptRaw ? stripPlayTypeWrapper(ptRaw) : null;
-      if (contentChanged("play-function.ts", pf) || contentChanged("play-type.ts", ptRaw))
-        ops.push({ kind: "element.update-config", chapterId, elementId: entityId, playFunction: pf ?? undefined, playType: pt ?? undefined, entityDir });
+      const pfRemoved = fileRemoved("play-function.ts", pf);
+      const ptRemoved = fileRemoved("play-type.ts", ptRaw);
+      if (contentChanged("play-function.ts", pf) || contentChanged("play-type.ts", ptRaw) || pfRemoved || ptRemoved)
+        // playFunction/playType as null = file deleted → clear on the board.
+        ops.push({ kind: "element.update-config", chapterId, elementId: entityId, playFunction: pf ?? (pfRemoved ? null : undefined), playType: pt ?? (ptRemoved ? null : undefined), entityDir });
       break;
     }
     case "milestone": {

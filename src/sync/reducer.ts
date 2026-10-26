@@ -69,6 +69,25 @@ function oldValue(e: ChangelogEvent): Record<string, unknown> {
   return obj(e.data.oldValue);
 }
 
+/**
+ * Apply playFunction/playType from a config event's newValue to an element.
+ * The board sends `null` when a play config is cleared — `str(null)` is
+ * undefined, so "key present with a non-string value" must clear the field
+ * rather than leave the stale value in the model.
+ */
+function applyPlayConfig(el: ElementState, nv: Record<string, unknown>): void {
+  if ("playFunction" in nv) {
+    const v = str(nv.playFunction);
+    if (v) el.playFunction = v;
+    else delete el.playFunction;
+  }
+  if ("playType" in nv) {
+    const v = str(nv.playType);
+    if (v) el.playType = v;
+    else delete el.playType;
+  }
+}
+
 /** Reassign `index` on children according to an ordered id list. */
 function reindex(ids: string[], get: (id: string) => { index: number } | undefined): void {
   ids.forEach((id, i) => {
@@ -231,8 +250,10 @@ function putElementFromRaw(
     noArrowSource: bool(raw.noArrowSource) ?? existing?.noArrowSource,
     noArrowTarget: bool(raw.noArrowTarget) ?? existing?.noArrowTarget,
     comments: existing?.comments ?? [],
-    playFunction: str(raw.playFunction) ?? existing?.playFunction,
-    playType: str(raw.playType) ?? existing?.playType,
+    // Full-element payloads are authoritative for play config: an absent or
+    // null playFunction/playType means "no play config", not "keep existing".
+    playFunction: str(raw.playFunction),
+    playType: str(raw.playType),
   };
   state.elements.set(id, el);
 }
@@ -549,22 +570,15 @@ const HANDLERS: Record<string, Handler> = {
     const icon = str(nv.icon);
     const noArrowSource = bool(nv.noArrowSource);
     const noArrowTarget = bool(nv.noArrowTarget);
-    const playFunction = str(nv.playFunction);
-    const playType = str(nv.playType);
     if (icon !== undefined) el.icon = icon;
     if (noArrowSource !== undefined) el.noArrowSource = noArrowSource;
     if (noArrowTarget !== undefined) el.noArrowTarget = noArrowTarget;
-    if (playFunction !== undefined) el.playFunction = playFunction;
-    if (playType !== undefined) el.playType = playType;
+    applyPlayConfig(el, nv);
   },
   "element-config-synced": (s, e) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
-    const nv = newValue(e);
-    const playFunction = str(nv.playFunction);
-    const playType = str(nv.playType);
-    if (playFunction !== undefined) el.playFunction = playFunction;
-    if (playType !== undefined) el.playType = playType;
+    applyPlayConfig(el, newValue(e));
   },
   "element-comment-added": (s, e) => {
     const el = e.elementId && s.elements.get(e.elementId);

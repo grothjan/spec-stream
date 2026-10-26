@@ -263,4 +263,52 @@ describe("computeManifestDiff", () => {
     expect(deletes.some((d) => d.entityDir === SCENARIO_DIR)).toBe(false);
     expect(deletes.some((d) => d.id === SCENARIO_ID)).toBe(false);
   });
+
+  it("emits update when a content file tracked only via sync-back-ids was deleted (hash matches)", () => {
+    // Reproduces the play-function.ts resurrection bug:
+    // sync-back pushed play-function.ts and recorded its hash in
+    // sync-back-ids.json, but sync-manifest.json — written before the file
+    // existed and not rewritten since — holds an entry whose entity hash
+    // matches the post-deletion disk state exactly. Without the contentHashes
+    // union and the missing-file check, the deletion is silently skipped.
+    writeFullModel(root);
+    const elemHash = computeDiskHash(root, ELEMENT_DIR, "element");
+    writeManifest(root, {
+      [ELEMENT_DIR]: { id: ELEMENT_ID, hash: elemHash },
+    });
+
+    // sync-back-ids has the newer snapshot including play-function.ts.
+    const backIds: SyncManifest = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [ELEMENT_DIR]: { id: ELEMENT_ID, hash: "otherhash", contentHashes: { "play-function.ts": "deadbeef" } },
+      },
+    };
+    saveManifest(syncBackIdsPath(root), backIds);
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+    const elementDiff = diffs.find((d) => d.entityDir === ELEMENT_DIR);
+    expect(elementDiff?.status).toBe("update");
+    // The merged contentHashes must surface the sync-back-ids-only entry so
+    // operationBuilder can recognise the deletion.
+    expect(elementDiff?.oldContentHashes?.["play-function.ts"]).toBe("deadbeef");
+  });
+
+  it("still skips unchanged entities when every tracked content file exists on disk", () => {
+    writeFullModel(root);
+    // A tracked content file that still exists must not defeat the hash-match skip.
+    writeFileSync(join(root, ELEMENT_DIR, "description.md"), "hello", "utf8");
+    const elemHash = computeDiskHash(root, ELEMENT_DIR, "element");
+    const manifest: SyncManifest = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [ELEMENT_DIR]: { id: ELEMENT_ID, hash: elemHash, contentHashes: { "description.md": "deadbeef" } },
+      },
+    };
+    saveManifest(syncManifestPath(root), manifest);
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+    expect(diffs.find((d) => d.entityDir === ELEMENT_DIR)).toBeUndefined();
+  });
 });
