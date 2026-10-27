@@ -33,11 +33,59 @@ import {
   laneDetailsKey,
 } from "./model.js";
 
+/**
+ * Tracks which entities were touched by a single `applyEvent` call so the projection
+ * can write only the affected files instead of the entire tree.
+ *
+ * Callers accumulate dirty sets across the debounce window; `flushWrite` consumes and
+ * resets the accumulated set after each write pass.
+ */
+export interface DirtySet {
+  chapters: Set<string>;
+  slices: Set<string>;
+  lanes: Set<string>;
+  elements: Set<string>;
+  milestones: Set<string>;
+  scenarios: Set<string>;
+  /** Keyed by slug. */
+  htmlSnippets: Set<string>;
+  /** Keyed by laneDetailsKey (type\0name). */
+  sharedLaneDetails: Set<string>;
+  /** True when workspace-level fields (name) changed. */
+  workspace: boolean;
+}
+
+export function emptyDirtySet(): DirtySet {
+  return {
+    chapters: new Set(),
+    slices: new Set(),
+    lanes: new Set(),
+    elements: new Set(),
+    milestones: new Set(),
+    scenarios: new Set(),
+    htmlSnippets: new Set(),
+    sharedLaneDetails: new Set(),
+    workspace: false,
+  };
+}
+
+export function mergeDirty(target: DirtySet, src: DirtySet): void {
+  for (const id of src.chapters) target.chapters.add(id);
+  for (const id of src.slices) target.slices.add(id);
+  for (const id of src.lanes) target.lanes.add(id);
+  for (const id of src.elements) target.elements.add(id);
+  for (const id of src.milestones) target.milestones.add(id);
+  for (const id of src.scenarios) target.scenarios.add(id);
+  for (const id of src.htmlSnippets) target.htmlSnippets.add(id);
+  for (const id of src.sharedLaneDetails) target.sharedLaneDetails.add(id);
+  if (src.workspace) target.workspace = true;
+}
+
 /** Apply one event, mutating and returning `state`. Never throws on bad payloads. */
-export function applyEvent(state: ModelState, event: ChangelogEvent): ModelState {
+export function applyEvent(state: ModelState, event: ChangelogEvent, dirty?: DirtySet): ModelState {
   try {
     const handler = HANDLERS[event.type];
-    if (handler) handler(state, event);
+    if (handler) handler(state, event, dirty ?? emptyDirtySet());
   } catch {
     // Untrusted payloads must never crash the projection; a rebuild reconciles if needed.
   }
@@ -299,17 +347,22 @@ function removeLane(state: ModelState, laneId: string): void {
 
 // ───────────────── handler table ─────────────────
 
-type Handler = (state: ModelState, event: ChangelogEvent) => void;
+type Handler = (state: ModelState, event: ChangelogEvent, dirty: DirtySet) => void;
 
 const HANDLERS: Record<string, Handler> = {
   // ── Chapter ──
-  "chapter-added": (s, e) => putChapterFromRaw(s, { ...newValue(e), context: str(newValue(e).context) ?? e.context }),
-  "chapter-renamed": (s, e) => {
+  "chapter-added": (s, e, d) => {
+    putChapterFromRaw(s, { ...newValue(e), context: str(newValue(e).context) ?? e.context });
+    const id = str(newValue(e).id) ?? e.chapterId;
+    if (id) d.chapters.add(id);
+    d.workspace = true; // uuid-index changes
+  },
+  "chapter-renamed": (s, e, d) => {
     const c = e.chapterId && s.chapters.get(e.chapterId);
     const name = str(newValue(e).name);
-    if (c && name !== undefined) c.name = name;
+    if (c && name !== undefined) { c.name = name; d.chapters.add(c.id); }
   },
-  "chapter-edited": (s, e) => {
+  "chapter-edited": (s, e, d) => {
     const c = e.chapterId && s.chapters.get(e.chapterId);
     if (!c) return;
     const nv = newValue(e);
@@ -317,113 +370,142 @@ const HANDLERS: Record<string, Handler> = {
     const context = str(nv.context);
     if (name !== undefined) c.name = name;
     if (context !== undefined) c.context = context;
+    d.chapters.add(c.id);
   },
-  "chapter-removed": (s, e) => {
+  "chapter-removed": (s, e, d) => {
     if (!e.chapterId) return;
     for (const sl of [...s.slices.values()]) {
-      if (sl.chapterId === e.chapterId) removeSlice(s, sl.id);
+      if (sl.chapterId === e.chapterId) { removeSlice(s, sl.id); d.slices.add(sl.id); }
     }
     for (const ln of [...s.lanes.values()]) {
-      if (ln.chapterId === e.chapterId) removeLane(s, ln.id);
+      if (ln.chapterId === e.chapterId) { removeLane(s, ln.id); d.lanes.add(ln.id); }
     }
     s.chapters.delete(e.chapterId);
+    d.chapters.add(e.chapterId);
+    d.workspace = true;
   },
-  "chapters-reordered": (s, e) => {
+  "chapters-reordered": (s, e, d) => {
     const ids = strArr(newValue(e).chapterIds);
-    if (ids) reindex(ids, (id) => s.chapters.get(id));
+    if (!ids) return;
+    reindex(ids, (id) => s.chapters.get(id));
+    for (const id of ids) d.chapters.add(id);
   },
 
   // ── Slice ──
-  "slice-added": (s, e) => {
-    if (e.chapterId) putSliceFromRaw(s, e.chapterId, obj(newValue(e).slice));
+  "slice-added": (s, e, d) => {
+    if (e.chapterId) {
+      putSliceFromRaw(s, e.chapterId, obj(newValue(e).slice));
+      const id = str(obj(newValue(e).slice).id);
+      if (id) { d.slices.add(id); d.chapters.add(e.chapterId); } // index.md changes
+      d.workspace = true;
+    }
   },
-  "slice-renamed": (s, e) => {
+  "slice-renamed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const label = str(newValue(e).label);
-    if (sl && label !== undefined) sl.label = label;
+    if (sl && label !== undefined) { sl.label = label; d.slices.add(sl.id); }
   },
-  "slices-reordered": (s, e) => {
+  "slices-reordered": (s, e, d) => {
     const ids = strArr(newValue(e).sliceIds);
     if (!ids) return;
     reindex(ids, (id) => s.slices.get(id));
     if (e.chapterId) {
       const c = s.chapters.get(e.chapterId);
-      if (c) c.sliceOrder = ids.filter((id) => s.slices.has(id));
+      if (c) { c.sliceOrder = ids.filter((id) => s.slices.has(id)); d.chapters.add(e.chapterId); }
+    }
+    for (const id of ids) d.slices.add(id);
+  },
+  "slice-removed": (s, e, d) => {
+    if (e.sliceId) {
+      const sl = s.slices.get(e.sliceId);
+      if (sl) d.chapters.add(sl.chapterId);
+      removeSlice(s, e.sliceId);
+      d.slices.add(e.sliceId);
+      d.workspace = true;
     }
   },
-  "slice-removed": (s, e) => {
-    if (e.sliceId) removeSlice(s, e.sliceId);
-  },
-  "slice-details-changed": (s, e) => {
+  "slice-details-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const details = str(newValue(e).details);
-    if (sl && details !== undefined) sl.details = details;
+    if (sl && details !== undefined) { sl.details = details; d.slices.add(sl.id); }
   },
-  "slice-status-changed": (s, e) => {
+  "slice-status-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const status = str(newValue(e).status);
-    if (sl && status !== undefined) sl.status = status;
+    if (sl && status !== undefined) { sl.status = status; d.slices.add(sl.id); }
   },
-  "slice-icon-changed": (s, e) => {
+  "slice-icon-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const icon = str(newValue(e).icon);
-    if (sl && icon !== undefined) sl.icon = icon;
+    if (sl && icon !== undefined) { sl.icon = icon; d.slices.add(sl.id); }
   },
-  "slice-resized": (s, e) => {
+  "slice-resized": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const width = num(newValue(e).width);
-    if (sl && width !== undefined) sl.width = width;
+    if (sl && width !== undefined) { sl.width = width; d.slices.add(sl.id); }
   },
-  "slice-assignee-set": (s, e) => {
+  "slice-assignee-set": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
-    if (sl) sl.assignee = str(newValue(e).assigneeId);
+    if (sl) { sl.assignee = str(newValue(e).assigneeId); d.slices.add(sl.id); }
   },
-  "slice-estimate-set": (s, e) => {
+  "slice-estimate-set": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     sl.estimate = str(newValue(e).estimate);
     syncMilestoneSliceRef(s, sl);
+    d.slices.add(sl.id);
   },
-  "slice-time-spent-set": (s, e) => {
+  "slice-time-spent-set": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     sl.timeSpent = str(newValue(e).timeSpent);
     syncMilestoneSliceRef(s, sl);
+    d.slices.add(sl.id);
   },
-  "slice-milestone-set": (s, e) => {
+  "slice-milestone-set": (s, e, d) => {
     const nv = newValue(e);
     const sliceId = str(nv.sliceId) ?? e.sliceId;
     const milestoneId = str(nv.milestoneId);
     const action = str(nv.action) ?? "add";
     if (!sliceId || !milestoneId) return;
     setSliceMilestone(s, sliceId, milestoneId, action === "remove" ? "remove" : "add");
+    d.slices.add(sliceId);
+    d.milestones.add(milestoneId);
   },
-  "new-slice-comment-written": (s, e) => {
+  "new-slice-comment-written": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const c = commentFromRaw(obj(newValue(e).comment));
-    if (sl && c) sl.comments.push(c);
+    if (sl && c) { sl.comments.push(c); d.slices.add(sl.id); }
   },
-  "slice-comment-changed": (s, e) => {
+  "slice-comment-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     const nv = newValue(e);
     const commentId = str(nv.commentId);
     const text = str(nv.text);
     const c = sl.comments.find((x) => x.id === commentId);
-    if (c && text !== undefined) c.text = text;
+    if (c && text !== undefined) { c.text = text; d.slices.add(sl.id); }
   },
-  "slice-comment-removed": (s, e) => {
+  "slice-comment-removed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     const commentId = str(newValue(e).commentId) ?? str(obj(oldValue(e).comment).id);
-    if (commentId) sl.comments = sl.comments.filter((x) => x.id !== commentId);
+    if (commentId) { sl.comments = sl.comments.filter((x) => x.id !== commentId); d.slices.add(sl.id); }
   },
-  "slices-copied": (s, e) => {
+  "slices-copied": (s, e, d) => {
     const target = str(e.data.targetChapterId) ?? e.chapterId ?? undefined;
     const slices = Array.isArray(newValue(e).slices) ? (newValue(e).slices as unknown[]) : [];
-    if (target) for (const raw of slices) putSliceFromRaw(s, target, obj(raw));
+    if (target) {
+      for (const raw of slices) {
+        putSliceFromRaw(s, target, obj(raw));
+        const id = str(obj(raw).id);
+        if (id) d.slices.add(id);
+      }
+      d.chapters.add(target);
+      d.workspace = true;
+    }
   },
-  "slices-moved": (s, e) => {
+  "slices-moved": (s, e, d) => {
     const target = str(e.data.targetChapterId) ?? e.chapterId ?? undefined;
     const source = str(e.data.sourceChapterId);
     const nv = newValue(e);
@@ -437,6 +519,7 @@ const HANDLERS: Record<string, Handler> = {
       for (const overriddenId of overriddenSliceIds) {
         targetChapter.sliceOrder = targetChapter.sliceOrder.filter((x) => x !== overriddenId);
         s.slices.delete(overriddenId);
+        d.slices.add(overriddenId);
       }
     }
 
@@ -446,10 +529,11 @@ const HANDLERS: Record<string, Handler> = {
       const id = str(sliceRaw.id);
       if (id && source && source !== target) {
         const src = s.chapters.get(source);
-        if (src) src.sliceOrder = src.sliceOrder.filter((x) => x !== id);
+        if (src) { src.sliceOrder = src.sliceOrder.filter((x) => x !== id); d.chapters.add(source); }
       }
       // Upsert the slice itself (updates index and label from newValue).
       putSliceFromRaw(s, target, sliceRaw);
+      if (id) d.slices.add(id);
 
       // Update the sliceId on all elements that belong to this moved slice.
       const elements = Array.isArray(obj(raw).elements) ? (obj(raw).elements as unknown[]) : [];
@@ -457,7 +541,7 @@ const HANDLERS: Record<string, Handler> = {
         const el = s.elements.get(str(obj(elRaw).id) ?? "");
         if (el) {
           const newSliceId = str(obj(raw).newSliceId) ?? str(sliceRaw.id);
-          if (newSliceId) el.sliceId = newSliceId;
+          if (newSliceId) { el.sliceId = newSliceId; d.elements.add(el.id); }
         }
       }
     }
@@ -469,69 +553,103 @@ const HANDLERS: Record<string, Handler> = {
         const ib = s.slices.get(b)?.index ?? 0;
         return ia - ib;
       });
+      d.chapters.add(target);
     }
   },
 
   // ── Lane ──
-  "lane-added": (s, e) => {
-    if (e.chapterId) putLaneFromRaw(s, e.chapterId, obj(newValue(e).lane));
+  "lane-added": (s, e, d) => {
+    if (e.chapterId) {
+      putLaneFromRaw(s, e.chapterId, obj(newValue(e).lane));
+      const id = str(obj(newValue(e).lane).id);
+      if (id) d.lanes.add(id);
+      d.chapters.add(e.chapterId);
+      d.workspace = true;
+    }
   },
-  "lane-renamed": (s, e) => {
+  "lane-renamed": (s, e, d) => {
     const lane = e.data.laneId ? s.lanes.get(str(e.data.laneId)!) : undefined;
     const label = str(newValue(e).label);
     if (!lane || label === undefined) return;
+    d.sharedLaneDetails.add(laneKeyOf(lane)); // old key
     leaveShared(s.sharedLaneDetails, laneKeyOf(lane), lane.id);
     lane.label = label;
     joinShared(s.sharedLaneDetails, laneKeyOf(lane), lane.id, "");
+    d.lanes.add(lane.id);
+    d.sharedLaneDetails.add(laneKeyOf(lane)); // new key
   },
-  "lanes-reordered": (s, e) => {
+  "lanes-reordered": (s, e, d) => {
     const ids = strArr(newValue(e).laneIds);
     if (!ids) return;
     reindex(ids, (id) => s.lanes.get(id));
     if (e.chapterId) {
       const c = s.chapters.get(e.chapterId);
-      if (c) c.laneOrder = ids.filter((id) => s.lanes.has(id));
+      if (c) { c.laneOrder = ids.filter((id) => s.lanes.has(id)); d.chapters.add(e.chapterId); }
     }
+    for (const id of ids) d.lanes.add(id);
   },
-  "lane-removed": (s, e) => {
+  "lane-removed": (s, e, d) => {
     const laneId = str(e.data.laneId) ?? str(obj(oldValue(e).lane).id);
-    if (laneId) removeLane(s, laneId);
+    if (laneId) {
+      const lane = s.lanes.get(laneId);
+      if (lane) { d.sharedLaneDetails.add(laneKeyOf(lane)); d.chapters.add(lane.chapterId); }
+      removeLane(s, laneId);
+      d.lanes.add(laneId);
+      d.workspace = true;
+    }
   },
-  "lane-details-changed": (s, e) => {
+  "lane-details-changed": (s, e, d) => {
     const lane = s.lanes.get(str(e.data.laneId) ?? "");
     const details = str(newValue(e).details);
     if (lane && details !== undefined) {
       setSharedBody(s.sharedLaneDetails, laneKeyOf(lane), details, () => {});
+      d.sharedLaneDetails.add(laneKeyOf(lane));
     }
   },
-  "lane-details-synchronized": (s, e) => {
+  "lane-details-synchronized": (s, e, d) => {
     const lane = s.lanes.get(str(e.data.laneId) ?? "");
     const details = str(newValue(e).details);
     if (lane && details !== undefined) {
       setSharedBody(s.sharedLaneDetails, laneKeyOf(lane), details, () => {});
+      d.sharedLaneDetails.add(laneKeyOf(lane));
     }
   },
-  "lane-icon-changed": (s, e) => {
+  "lane-icon-changed": (s, e, d) => {
     const lane = s.lanes.get(str(e.data.laneId) ?? "");
-    if (lane) lane.icon = str(newValue(e).icon);
+    if (lane) { lane.icon = str(newValue(e).icon); d.lanes.add(lane.id); }
   },
-  "lane-resized": (s, e) => {
+  "lane-resized": (s, e, d) => {
     const lane = s.lanes.get(str(e.data.laneId) ?? "");
     const height = num(newValue(e).height);
-    if (lane && height !== undefined) lane.height = height;
+    if (lane && height !== undefined) { lane.height = height; d.lanes.add(lane.id); }
   },
 
   // ── Element ──
-  "element-added": (s, e) => {
-    if (e.chapterId) putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
+  "element-added": (s, e, d) => {
+    if (e.chapterId) {
+      putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
+      const id = str(obj(newValue(e).element).id);
+      if (id) d.elements.add(id);
+      d.workspace = true;
+    }
   },
-  "element-added-with-name": (s, e) => {
-    if (e.chapterId) putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
+  "element-added-with-name": (s, e, d) => {
+    if (e.chapterId) {
+      putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
+      const id = str(obj(newValue(e).element).id);
+      if (id) d.elements.add(id);
+      d.workspace = true;
+    }
   },
-  "element-copied": (s, e) => {
-    if (e.chapterId) putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
+  "element-copied": (s, e, d) => {
+    if (e.chapterId) {
+      putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
+      const id = str(obj(newValue(e).element).id);
+      if (id) d.elements.add(id);
+      d.workspace = true;
+    }
   },
-  "element-moved": (s, e) => {
+  "element-moved": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     const nv = newValue(e);
@@ -541,29 +659,31 @@ const HANDLERS: Record<string, Handler> = {
     if (laneId !== undefined) el.laneId = laneId;
     if (sliceId !== undefined) el.sliceId = sliceId;
     if (index !== undefined) el.index = index;
+    d.elements.add(el.id);
   },
-  "element-renamed": (s, e) => {
+  "element-renamed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const name = str(newValue(e).name);
     if (!el || name === undefined) return;
     el.name = name;
+    d.elements.add(el.id);
   },
-  "element-description-changed": (s, e) => {
+  "element-description-changed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const description = str(newValue(e).description);
-    if (el && description !== undefined) el.description = description;
+    if (el && description !== undefined) { el.description = description; d.elements.add(el.id); }
   },
-  "element-details-changed": (s, e) => {
+  "element-details-changed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const details = str(newValue(e).details);
-    if (el && details !== undefined) el.details = details;
+    if (el && details !== undefined) { el.details = details; d.elements.add(el.id); }
   },
-  "element-details-synchronized": (s, e) => {
+  "element-details-synchronized": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const details = str(newValue(e).details);
-    if (el && details !== undefined) el.details = details;
+    if (el && details !== undefined) { el.details = details; d.elements.add(el.id); }
   },
-  "element-config-changed": (s, e) => {
+  "element-config-changed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     const nv = newValue(e);
@@ -574,43 +694,53 @@ const HANDLERS: Record<string, Handler> = {
     if (noArrowSource !== undefined) el.noArrowSource = noArrowSource;
     if (noArrowTarget !== undefined) el.noArrowTarget = noArrowTarget;
     applyPlayConfig(el, nv);
+    d.elements.add(el.id);
   },
-  "element-config-synced": (s, e) => {
+  "element-config-synced": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     applyPlayConfig(el, newValue(e));
+    d.elements.add(el.id);
   },
-  "element-comment-added": (s, e) => {
+  "element-comment-added": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const c = commentFromRaw(newValue(e));
-    if (el && c) el.comments.push(c);
+    if (el && c) { el.comments.push(c); d.elements.add(el.id); }
   },
-  "element-comment-updated": (s, e) => {
+  "element-comment-updated": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     const commentId = str(e.data.commentId);
     const text = str(newValue(e).text);
     const c = el.comments.find((x) => x.id === commentId);
-    if (c && text !== undefined) c.text = text;
+    if (c && text !== undefined) { c.text = text; d.elements.add(el.id); }
   },
-  "element-comment-removed": (s, e) => {
+  "element-comment-removed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     const commentId = str(e.data.commentId) ?? str(obj(oldValue(e).comment).id);
-    if (commentId) el.comments = el.comments.filter((x) => x.id !== commentId);
+    if (commentId) { el.comments = el.comments.filter((x) => x.id !== commentId); d.elements.add(el.id); }
   },
-  "elements-reordered": (s, e) => {
+  "elements-reordered": (s, e, d) => {
     const ids = strArr(newValue(e).elementIds);
-    if (ids) reindex(ids, (id) => s.elements.get(id));
+    if (ids) {
+      reindex(ids, (id) => s.elements.get(id));
+      for (const id of ids) d.elements.add(id);
+    }
   },
-  "element-removed": (s, e) => {
+  "element-removed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
-    if (el) removeElement(s, el);
+    if (el) { removeElement(s, el); d.elements.add(el.id); d.workspace = true; }
   },
 
   // ── Milestone ──
-  "milestone-added": (s, e) => putMilestoneFromRaw(s, obj(newValue(e).milestone)),
-  "milestone-settings-changed": (s, e) => {
+  "milestone-added": (s, e, d) => {
+    putMilestoneFromRaw(s, obj(newValue(e).milestone));
+    const id = str(obj(newValue(e).milestone).id);
+    if (id) d.milestones.add(id);
+    d.workspace = true;
+  },
+  "milestone-settings-changed": (s, e, d) => {
     const id = str(e.data.milestoneId) ?? str(newValue(e).id);
     const m = id ? s.milestones.get(id) : undefined;
     if (!m) return;
@@ -625,8 +755,9 @@ const HANDLERS: Record<string, Handler> = {
     if (deadline !== undefined) m.deadline = deadline;
     if (color !== undefined) m.color = color;
     if (isCompleted !== undefined) m.isCompleted = isCompleted;
+    d.milestones.add(m.id);
   },
-  "milestone-deleted": (s, e) => {
+  "milestone-deleted": (s, e, d) => {
     const id = str(e.data.milestoneId) ?? str(obj(oldValue(e).milestone).id);
     if (!id) return;
     // Detach denormalized fields from any slice that referenced it.
@@ -634,24 +765,30 @@ const HANDLERS: Record<string, Handler> = {
       if (sl.milestoneId === id) {
         sl.milestoneId = undefined;
         sl.milestoneName = undefined;
+        d.slices.add(sl.id);
       }
     }
     s.milestones.delete(id);
+    d.milestones.add(id);
+    d.workspace = true;
   },
 
   // ── Scenario ──
-  "scenario-created": (s, e) => {
+  "scenario-created": (s, e, d) => {
     const chapterId = e.chapterId;
     if (!chapterId) return;
     putScenarioFromRaw(s, chapterId, obj(newValue(e).scenario));
+    const id = str(obj(newValue(e).scenario).id);
+    if (id) d.scenarios.add(id);
+    d.workspace = true;
   },
-  "scenario-renamed": (s, e) => {
+  "scenario-renamed": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
     const name = str(newValue(e).name);
     const sc = scenarioId ? s.scenarios.get(scenarioId) : undefined;
-    if (sc && name !== undefined) sc.name = name;
+    if (sc && name !== undefined) { sc.name = name; d.scenarios.add(sc.id); }
   },
-  "scenario-initial-state-changed": (s, e) => {
+  "scenario-initial-state-changed": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
     const sc = scenarioId ? s.scenarios.get(scenarioId) : undefined;
     if (!sc) return;
@@ -662,29 +799,27 @@ const HANDLERS: Record<string, Handler> = {
       sc.initialState = initialState as Record<string, unknown>;
     }
     if (Array.isArray(seededEvents)) sc.seededEvents = seededEvents.map(toSeededEvent);
+    d.scenarios.add(sc.id);
   },
-  "scenario-clock-changed": (s, e) => {
+  "scenario-clock-changed": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
     const sc = scenarioId ? s.scenarios.get(scenarioId) : undefined;
     if (!sc) return;
-    // clock may be null to clear, or a string ISO datetime
     const clock = newValue(e).clock;
     sc.clock = clock === null ? undefined : str(clock);
+    d.scenarios.add(sc.id);
   },
-  "scenario-interaction-recorded": (s, e) => {
+  "scenario-interaction-recorded": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
     const sc = scenarioId ? s.scenarios.get(scenarioId) : undefined;
     if (!sc) return;
     const nv = newValue(e);
-    // The event carries the full updated interactions array (authoritative).
     if (Array.isArray(nv.interactions)) {
       sc.interactions = nv.interactions
         .map(toScenarioInteraction)
         .filter((i): i is ScenarioInteraction => i !== null);
     } else {
-      // Fallback: upsert the single entry from nv.entry.
       const entry = obj(nv.entry);
-      // New format: keyed by uiElementId.
       const uiElementId = str(entry.uiElementId);
       const storage = entry.storage && typeof entry.storage === "object" && !Array.isArray(entry.storage)
         ? (entry.storage as Record<string, unknown>)
@@ -698,21 +833,20 @@ const HANDLERS: Record<string, Handler> = {
         }
       }
     }
+    d.scenarios.add(sc.id);
   },
-  "scenario-deleted": (s, e) => {
+  "scenario-deleted": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId) ?? str(obj(obj(e.data.oldValue).scenario).id);
-    if (scenarioId) s.scenarios.delete(scenarioId);
+    if (scenarioId) { s.scenarios.delete(scenarioId); d.scenarios.add(scenarioId); d.workspace = true; }
   },
-  "scenario-expectation-set": (s, e) => {
+  "scenario-expectation-set": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
     const sc = scenarioId ? s.scenarios.get(scenarioId) : undefined;
     if (!sc) return;
     const nv = newValue(e);
-    // nv.expectations is the full updated array (authoritative)
     if (Array.isArray(nv.expectations)) {
       sc.expectations = nv.expectations.map(toScenarioExpectation);
     } else {
-      // Fallback: upsert the single expectation from nv.expectation
       const raw = obj(nv.expectation);
       const exp = toScenarioExpectation(raw);
       if (!exp.id) return;
@@ -723,26 +857,26 @@ const HANDLERS: Record<string, Handler> = {
         sc.expectations.push(exp);
       }
     }
+    d.scenarios.add(sc.id);
   },
-  "scenario-expectation-removed": (s, e) => {
+  "scenario-expectation-removed": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
     const sc = scenarioId ? s.scenarios.get(scenarioId) : undefined;
     if (!sc) return;
     const nv = newValue(e);
-    // nv.expectations is the full updated array (authoritative)
     if (Array.isArray(nv.expectations)) {
       sc.expectations = nv.expectations.map(toScenarioExpectation);
     } else {
-      // Fallback: remove by expectationId
       const expectationId = str(nv.expectationId);
       if (expectationId) {
         sc.expectations = sc.expectations.filter((x) => x.id !== expectationId);
       }
     }
+    d.scenarios.add(sc.id);
   },
 
   // ── HTML Snippet ──
-  "html-snippet-added": (s, e) => {
+  "html-snippet-added": (s, e, d) => {
     const raw = obj(newValue(e).snippet);
     const slug = str(raw.slug) ?? str(e.data.slug);
     if (!slug) return;
@@ -753,8 +887,10 @@ const HANDLERS: Record<string, Handler> = {
       createdAt: str(raw.created_at) ?? str(raw.createdAt),
       updatedAt: str(raw.updated_at) ?? str(raw.updatedAt),
     } satisfies HtmlSnippetState);
+    d.htmlSnippets.add(slug);
+    d.workspace = true;
   },
-  "html-snippet-updated": (s, e) => {
+  "html-snippet-updated": (s, e, d) => {
     const slug = str(e.data.slug);
     if (!slug) return;
     const existing = s.htmlSnippets.get(slug);
@@ -764,10 +900,11 @@ const HANDLERS: Record<string, Handler> = {
     const snippet = str(nv.snippet);
     if (name !== undefined) existing.name = name;
     if (snippet !== undefined) existing.snippet = snippet;
+    d.htmlSnippets.add(slug);
   },
-  "html-snippet-deleted": (s, e) => {
+  "html-snippet-deleted": (s, e, d) => {
     const slug = str(e.data.slug) ?? str(obj(obj(oldValue(e).snippet)).slug);
-    if (slug) s.htmlSnippets.delete(slug);
+    if (slug) { s.htmlSnippets.delete(slug); d.htmlSnippets.add(slug); d.workspace = true; }
   },
 };
 

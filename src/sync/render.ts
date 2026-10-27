@@ -40,6 +40,7 @@ import {
   elementsInCell,
 } from "./model.js";
 import { sanitizeSegment, nameSlug } from "./sanitize.js";
+import type { DirtySet } from "./reducer.js";
 
 /** A desired file tree: relative POSIX path -> UTF-8 content. */
 export type DesiredTree = Map<string, string>;
@@ -75,6 +76,122 @@ export function render(state: ModelState): DesiredTree {
   // Build the flat UUID → path index so agents can resolve an id to a directory without
   // recursing the whole tree (path is the directory containing the primary .json).
   renderUuidIndex(tree, state);
+
+  return tree;
+}
+
+/**
+ * Partial render: only emit files for entities listed in `dirty`, plus the small
+ * always-rewrite files (workspace.json, uuid-index.json, and index.md for any chapter
+ * whose own data or one of its children changed).
+ *
+ * Used by the projection to avoid overwriting locally-modified files that were not
+ * touched by the applied events. `writeTree` with this partial tree will only
+ * overwrite the subset of files that actually changed on the board.
+ *
+ * `workspace.json` and `uuid-index.json` are always included: they are tiny and must
+ * stay consistent with the entity set after any add/remove event.
+ *
+ * A chapter's `index.md` is regenerated whenever the chapter itself or any of its
+ * children (slices, lanes, elements, scenarios) is dirty, because `index.md` is a
+ * derived summary that depends on all of them.
+ */
+export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
+  const tree: DesiredTree = new Map();
+
+  // Always rewrite workspace.json and uuid-index.json — tiny, and must stay consistent.
+  tree.set("workspace.json", json({ id: state.workspaceId, name: state.workspaceName }));
+  renderUuidIndex(tree, state);
+
+  // Determine which chapters need their index.md regenerated.
+  // A chapter is "index-dirty" if it or any of its children changed.
+  const indexDirtyChapters = new Set<string>(dirty.chapters);
+  for (const sliceId of dirty.slices) {
+    const c = state.slices.get(sliceId)?.chapterId;
+    if (c) indexDirtyChapters.add(c);
+  }
+  for (const laneId of dirty.lanes) {
+    const c = state.lanes.get(laneId)?.chapterId;
+    if (c) indexDirtyChapters.add(c);
+  }
+  for (const elementId of dirty.elements) {
+    const c = state.elements.get(elementId)?.chapterId;
+    if (c) indexDirtyChapters.add(c);
+  }
+  for (const scenarioId of dirty.scenarios) {
+    const c = state.scenarios.get(scenarioId)?.chapterId;
+    if (c) indexDirtyChapters.add(c);
+  }
+
+  // Render dirty chapters fully (chapter.json + index.md + all children).
+  for (const chapterId of dirty.chapters) {
+    const chapter = state.chapters.get(chapterId);
+    if (chapter) renderChapter(tree, state, chapter);
+    // Deleted chapter: nothing to render; writeTree will prune its directory.
+  }
+
+  // Regenerate index.md for chapters with dirty children that weren't fully re-rendered above.
+  for (const chapterId of indexDirtyChapters) {
+    if (dirty.chapters.has(chapterId)) continue; // already fully rendered
+    const chapter = state.chapters.get(chapterId);
+    if (chapter) tree.set(`${chapterDir(chapter)}/index.md`, renderChapterIndex(state, chapter));
+  }
+
+  // Render dirty slices.
+  for (const sliceId of dirty.slices) {
+    const slice = state.slices.get(sliceId);
+    if (!slice) continue;
+    const chapter = state.chapters.get(slice.chapterId);
+    if (chapter) renderSlice(tree, state, chapter, slice);
+  }
+
+  // Render dirty lanes.
+  for (const laneId of dirty.lanes) {
+    const lane = state.lanes.get(laneId);
+    if (!lane) continue;
+    const chapter = state.chapters.get(lane.chapterId);
+    if (chapter) renderLane(tree, chapter, lane);
+  }
+
+  // Render dirty elements.
+  for (const elementId of dirty.elements) {
+    const el = state.elements.get(elementId);
+    if (!el) continue;
+    const chapter = state.chapters.get(el.chapterId);
+    if (chapter) renderElement(tree, chapter, el);
+  }
+
+  // Render dirty milestones.
+  for (const milestoneId of dirty.milestones) {
+    const m = state.milestones.get(milestoneId);
+    if (m) renderMilestone(tree, m);
+    // Deleted milestone: writeTree will prune its directory.
+  }
+
+  // Render dirty scenarios.
+  for (const scenarioId of dirty.scenarios) {
+    const sc = state.scenarios.get(scenarioId);
+    if (!sc) continue;
+    const chapter = state.chapters.get(sc.chapterId);
+    if (chapter) renderScenario(tree, chapter, sc);
+  }
+
+  // Render dirty HTML snippets.
+  for (const slug of dirty.htmlSnippets) {
+    const snippet = state.htmlSnippets.get(slug);
+    if (snippet) renderHtmlSnippet(tree, snippet);
+    // Deleted snippet: writeTree will remove its files.
+  }
+
+  // Render dirty shared lane details.
+  for (const key of dirty.sharedLaneDetails) {
+    const entry = state.sharedLaneDetails.get(key);
+    if (!entry || entry.members.size === 0 || entry.body.length === 0) continue;
+    const { type, name } = parseLaneDetailsKey(entry.key);
+    const t = sanitizeSegment(type, "lane");
+    const n = sanitizeSegment(name, "unnamed");
+    tree.set(`lane-details/${t}/${n}/details.md`, markdown(entry.body));
+  }
 
   return tree;
 }

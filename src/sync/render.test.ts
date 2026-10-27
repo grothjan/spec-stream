@@ -310,3 +310,76 @@ describe("scenarios", () => {
     expect(sc.name).toBe("New Name");
   });
 });
+
+// ─── renderPartial ───────────────────────────────────────────────────────────
+
+import { renderPartial } from "./render.js";
+import { emptyDirtySet } from "./reducer.js";
+
+describe("renderPartial", () => {
+  it("always includes workspace.json and uuid-index.json", () => {
+    const t = renderPartial(model(), emptyDirtySet());
+    expect(t.has("workspace.json")).toBe(true);
+    expect(t.has("uuid-index.json")).toBe(true);
+  });
+
+  it("does NOT include entity files for clean entities", () => {
+    // Only lane-resized is dirty — element files should not appear
+    const dirty = emptyDirtySet();
+    dirty.lanes.add("l1");
+    const t = renderPartial(model(), dirty);
+    expect(t.has(`${ELEMENT_DIR}/element.json`)).toBe(false);
+    expect(t.has(`${ELEMENT_DIR}/description.md`)).toBe(false);
+    expect(t.has(`${SLICE_DIR}/slice.json`)).toBe(false);
+  });
+
+  it("includes only the dirty lane's files", () => {
+    const dirty = emptyDirtySet();
+    dirty.lanes.add("l1");
+    const t = renderPartial(model(), dirty);
+    expect(t.has(`${LANE_DIR}/lane.json`)).toBe(true);
+  });
+
+  it("includes dirty element files but not sibling elements", () => {
+    const s = model();
+    // Add a second element
+    applyEvent(s, ev("element-added", { chapterId: "c1", data: { newValue: { element: { id: "el2", type: "event", name: "Order Placed", context: "Ordering", laneId: "l1", sliceId: "s1", index: 1 } } } }));
+    const dirty = emptyDirtySet();
+    dirty.elements.add("el1"); // only el1 is dirty
+    const t = renderPartial(s, dirty);
+    expect(t.has(`${ELEMENT_DIR}/element.json`)).toBe(true);
+    expect(t.has(`${CHAPTER_DIR}/elements/el2/element.json`)).toBe(false);
+  });
+
+  it("regenerates chapter index.md when a slice is dirty (child change)", () => {
+    const dirty = emptyDirtySet();
+    dirty.slices.add("s1");
+    const t = renderPartial(model(), dirty);
+    expect(t.has(`${CHAPTER_DIR}/index.md`)).toBe(true);
+    // But chapter.json itself is NOT rewritten (chapter not directly dirty)
+    expect(t.has(`${CHAPTER_DIR}/chapter.json`)).toBe(false);
+  });
+
+  it("renders full chapter subtree when chapter itself is dirty", () => {
+    const dirty = emptyDirtySet();
+    dirty.chapters.add("c1");
+    const t = renderPartial(model(), dirty);
+    expect(t.has(`${CHAPTER_DIR}/chapter.json`)).toBe(true);
+    expect(t.has(`${CHAPTER_DIR}/index.md`)).toBe(true);
+    expect(t.has(`${SLICE_DIR}/slice.json`)).toBe(true);
+    expect(t.has(`${LANE_DIR}/lane.json`)).toBe(true);
+    expect(t.has(`${ELEMENT_DIR}/element.json`)).toBe(true);
+  });
+
+  it("matches full render output for the dirty entities", () => {
+    const s = model();
+    const dirty = emptyDirtySet();
+    dirty.elements.add("el1");
+    const partial = renderPartial(s, dirty);
+    const full = render(s);
+    // The element files should be identical between partial and full render
+    for (const path of [`${ELEMENT_DIR}/element.json`, `${ELEMENT_DIR}/description.md`, `${ELEMENT_DIR}/details.md`]) {
+      expect(partial.get(path)).toBe(full.get(path));
+    }
+  });
+});

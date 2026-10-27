@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Projection, type Timers } from "./projection.js";
@@ -241,5 +241,145 @@ describe("Projection cold-start cursor", () => {
   it("has no startup watermark on first run", () => {
     const { proj } = make();
     expect(proj.startupWatermark()).toBeUndefined();
+  });
+});
+
+describe("Projection partial (dirty-tracking) writes", () => {
+  it("does not overwrite an unrelated element's files when only a lane is resized", async () => {
+    const { proj, timers } = make();
+    await proj.seed();
+
+    // Give el1 a description so the seed writes description.md
+    const descPath = join(dir, "chapters/c1/elements/el1/description.md");
+    // The seed wrote an empty file (empty description in mock). Write a local edit over it.
+    writeFileSync(descPath, "LOCAL EDIT — do not overwrite");
+
+    // Board sends an unrelated event: lane-resized on l1
+    proj.handle(ev("lane-resized", {
+      id: "ev-lane",
+      data: { laneId: "l1", newValue: { height: 200 } },
+    }));
+    timers.tick();
+
+    // The lane.json should be updated with the new height
+    const laneJson = JSON.parse(readFileSync(join(dir, "chapters/c1/lanes/l1/lane.json"), "utf8"));
+    expect(laneJson.height).toBe(200);
+
+    // The locally-edited description must NOT be overwritten
+    expect(readFileSync(descPath, "utf8")).toBe("LOCAL EDIT — do not overwrite");
+  });
+
+  it("does update an element's files when an element event is applied", async () => {
+    const { proj, timers } = make();
+    await proj.seed();
+
+    const descPath = join(dir, "chapters/c1/elements/el1/description.md");
+    writeFileSync(descPath, "LOCAL EDIT");
+
+    // Board sends element-description-changed for el1 — this SHOULD overwrite
+    proj.handle(ev("element-description-changed", {
+      id: "ev-desc",
+      elementId: "el1",
+      data: { newValue: { description: "BOARD UPDATE" } },
+    }));
+    timers.tick();
+
+    expect(readFileSync(descPath, "utf8").trim()).toBe("BOARD UPDATE");
+  });
+
+  it("regenerates index.md when a child slice changes", async () => {
+    const { proj, timers } = make();
+    await proj.seed();
+
+    proj.handle(ev("slice-renamed", {
+      sliceId: "s1",
+      id: "ev-rename",
+      data: { newValue: { label: "Renamed Slice" } },
+    }));
+    timers.tick();
+
+    const index = readFileSync(join(dir, "chapters/c1/index.md"), "utf8");
+    expect(index).toContain("Renamed Slice");
+  });
+
+  it("does not touch another chapter's files when an unrelated chapter event fires", async () => {
+    const twoChapters: ApiChapter[] = [
+      {
+        id: "c1", name: "Checkout", index: 0, context: "Ordering", mode: "event-modeling",
+        lanes: [{ id: "l1", label: "Customer", type: "user-lane", index: 0 }],
+        slices: [{ id: "s1", label: "Place Order", index: 0, status: "draft" }],
+        elements: [{ id: "el1", type: "command", name: "Place Order", context: "Ordering", laneId: "l1", sliceId: "s1", index: 0 }],
+      },
+      {
+        id: "c2", name: "Payment", index: 1, context: "Billing", mode: "event-modeling",
+        lanes: [{ id: "l2", label: "System", type: "system", index: 0 }],
+        slices: [{ id: "s2", label: "Pay", index: 0, status: "draft" }],
+        elements: [],
+      },
+    ];
+    const { proj, timers } = make({ client: mockClient(twoChapters) });
+    await proj.seed();
+
+    // Local edit on c1's element
+    const descPath = join(dir, "chapters/c1/elements/el1/description.md");
+    writeFileSync(descPath, "LOCAL EDIT C1");
+
+    // Board event only touches c2
+    proj.handle(ev("lane-resized", {
+      id: "ev-c2-lane",
+      chapterId: "c2",
+      data: { laneId: "l2", newValue: { height: 300 } },
+    }));
+    timers.tick();
+
+    // c2's lane updated
+    const c2lane = JSON.parse(readFileSync(join(dir, "chapters/c2/lanes/l2/lane.json"), "utf8"));
+    expect(c2lane.height).toBe(300);
+
+    // c1's local edit untouched
+    expect(readFileSync(descPath, "utf8")).toBe("LOCAL EDIT C1");
+  });
+});
+
+describe("Projection sync-back lock", () => {
+  it("defers write while sync-back-lock exists, then fires after lock is removed", async () => {
+    // Use a nested model dir so dirname() produces a usable parent directory
+    const modelDir = join(dir, "model");
+    mkdirSync(modelDir, { recursive: true });
+    const timers = manualTimers();
+    const proj = new Projection({
+      dir: modelDir,
+      workspaceId: "ws",
+      workspaceName: "Demo",
+      client: mockClient(),
+      logger: noopLogger(),
+      timers,
+      debounceMs: 10,
+    });
+    await proj.seed();
+
+    // Lock file lives at dirname(modelDir) = dir
+    const lockFile = join(dir, "sync-back-lock");
+    writeFileSync(lockFile, "{}");
+
+    proj.handle(ev("lane-resized", {
+      id: "ev-locked",
+      data: { laneId: "l1", newValue: { height: 150 } },
+    }));
+
+    // First tick: lock held — deferred, no write
+    timers.tick();
+    const laneBefore = JSON.parse(readFileSync(join(modelDir, "chapters/c1/lanes/l1/lane.json"), "utf8"));
+    expect(laneBefore.height).toBeUndefined();
+
+    // Remove the lock
+    rmSync(lockFile, { force: true });
+
+    // Second tick: lock gone — scheduleWrite() fires and queues the real debounce timer
+    timers.tick();
+    // Third tick: the actual write fires
+    timers.tick();
+    const laneAfter = JSON.parse(readFileSync(join(modelDir, "chapters/c1/lanes/l1/lane.json"), "utf8"));
+    expect(laneAfter.height).toBe(150);
   });
 });

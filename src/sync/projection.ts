@@ -25,8 +25,8 @@ import { execFileSync } from "node:child_process";
 import type { ChangelogEvent } from "../realtime/events.js";
 import type { Logger } from "../logging/logger.js";
 import { type ModelState, emptyModel } from "./model.js";
-import { applyEvent } from "./reducer.js";
-import { render } from "./render.js";
+import { applyEvent, type DirtySet, emptyDirtySet, mergeDirty } from "./reducer.js";
+import { render, renderPartial } from "./render.js";
 import { writeTree, type WriteResult, readIfExists } from "./writer.js";
 import { seedModel } from "./seed.js";
 import { loadFromDisk } from "./loader.js";
@@ -82,9 +82,14 @@ export class Projection {
   private readonly git: boolean;
   private readonly commit?: (dir: string, message: string) => void;
 
+  /** Absolute path to the sync-back lock file (.spec-stream/sync-back-lock). */
+  private readonly syncBackLockFile: string;
+
   private writeTimer?: ReturnType<typeof setTimeout>;
   private pendingCursor: { lastEventId?: string; lastCreatedAt?: string } = {};
   private appliedSinceWrite = 0;
+  /** Accumulated dirty set across the current debounce window. Reset after each write. */
+  private pendingDirty: DirtySet = emptyDirtySet();
   private seeded = false;
 
   constructor(private readonly opts: ProjectionOptions) {
@@ -97,6 +102,9 @@ export class Projection {
     this.git = opts.git ?? false;
     this.commit = opts.commit;
     this.state = emptyModel(opts.workspaceId, opts.workspaceName);
+    // The lock file lives in the .spec-stream/ state directory, one level above the
+    // model directory (e.g. <project>/.spec-stream/sync-back-lock).
+    this.syncBackLockFile = join(dirname(opts.dir), "sync-back-lock");
   }
 
   /** Read the persisted cursor, if any (used by the app to replay missed events). */
@@ -163,7 +171,7 @@ export class Projection {
     } else {
       // Check if we have a valid local model
       const prior = this.startupWatermark();
-      
+
       if (this.hasValidLocalModel()) {
         // Load from disk instead of REST
         const loaded = loadFromDisk(this.dir, this.opts.workspaceId, this.opts.workspaceName);
@@ -221,8 +229,8 @@ export class Projection {
         }
       }
     }
-    
-    const result = this.flushWrite();
+
+    const result = this.flushWrite(true);
     this.seeded = true;
     this.log.info("sync.seed_done", {
       chapters: this.state.chapters.size,
@@ -230,8 +238,8 @@ export class Projection {
       elements: this.state.elements.size,
       milestones: this.state.milestones.size,
       ...result,
-      note: result.created + result.updated + result.deleted > 0 
-        ? `Tree updated: +${result.created} ~${result.updated} -${result.deleted} files` 
+      note: result.created + result.updated + result.deleted > 0
+        ? `Tree updated: +${result.created} ~${result.updated} -${result.deleted} files`
         : "No changes, tree unchanged",
     });
     return result;
@@ -239,7 +247,9 @@ export class Projection {
 
   /** Apply an event and schedule a debounced write pass. */
   handle(event: ChangelogEvent): void {
-    applyEvent(this.state, event);
+    const eventDirty = emptyDirtySet();
+    applyEvent(this.state, event, eventDirty);
+    mergeDirty(this.pendingDirty, eventDirty);
     this.appliedSinceWrite++;
     // Track the furthest cursor we've applied; persisted only after a successful write.
     this.pendingCursor = { lastEventId: event.id, lastCreatedAt: event.createdAt };
@@ -248,6 +258,20 @@ export class Projection {
 
   private scheduleWrite(): void {
     if (this.writeTimer) return; // a flush is already pending
+    // If sync-back is currently running, do not write — the files it has already written
+    // would be overwritten with stale content from our in-memory model. Instead, poll
+    // until the lock is gone, then let the normal debounce fire. By the time the lock
+    // clears, the board will have echoed sync-back's changes as changelog events and our
+    // handle() calls will have applied them to the in-memory model, so the next write
+    // will produce the correct tree.
+    if (existsSync(this.syncBackLockFile)) {
+      this.log.debug("sync.write_deferred", { reason: "sync-back lock held" });
+      this.writeTimer = this.timers.setTimeout(() => {
+        this.writeTimer = undefined;
+        this.scheduleWrite(); // re-check; either flush or defer again
+      }, this.debounceMs);
+      return;
+    }
     this.writeTimer = this.timers.setTimeout(() => {
       this.writeTimer = undefined;
       try {
@@ -263,23 +287,39 @@ export class Projection {
    * Render the current state and write it to disk, then advance + persist the cursor and
    * optionally commit. Synchronous so a crash can't interleave a half-written tree with a
    * cursor advance.
+   *
+   * Uses `renderPartial` when called from `handle()` (incremental event-driven write) so
+   * only files belonging to entities touched by the applied events are written. This
+   * protects locally-modified files for unrelated entities from being overwritten.
+   *
+   * Uses a full `render` only during `seed()` (initial build or explicit rebuild), where
+   * the entire tree must be consistent from scratch.
    */
-  private flushWrite(): WriteResult {
+  private flushWrite(full = false): WriteResult {
     const applied = this.appliedSinceWrite;
-    const tree = render(this.state);
-    const result = writeTree(this.dir, tree);
+
+    // Capture and reset the dirty set before rendering so any events that arrive
+    // concurrently during the (synchronous) render/write are queued into a fresh set.
+    const dirty = this.pendingDirty;
+    this.pendingDirty = emptyDirtySet();
     this.appliedSinceWrite = 0;
+
+    const tree = full ? render(this.state) : renderPartial(this.state, dirty);
+    const result = writeTree(this.dir, tree, { partial: !full });
 
     // Check if we need to update the sync state (cursor)
     const needsStateUpdate = this.needsStateUpdate();
-    
+
     // Write sync-manifest.json so sync-back can determine create-vs-update without git.
-    // Only write if there were actual changes (manifest reflects the new tree state).
+    // For partial writes we still need to update the manifest entries for touched entities.
+    // The simplest correct approach: always rebuild the manifest from the full render after
+    // any change, so it stays consistent. The manifest is small and the full render is
+    // cheap compared to disk I/O.
     const needsManifestUpdate = result.created + result.updated + result.deleted > 0;
     if (needsManifestUpdate) {
       try {
-        const manifest = buildManifestFromTree(tree);
-        // Only write manifest if content actually changed (compare with existing)
+        const fullTree = full ? tree : render(this.state);
+        const manifest = buildManifestFromTree(fullTree);
         const manifestPath = syncManifestPath(this.dir);
         const existingManifest = readIfExists(manifestPath);
         const newManifest = JSON.stringify(manifest, null, 2) + "\n";
@@ -314,9 +354,9 @@ export class Projection {
     const meaningfulChange = result.changedFiles.some(
       f => !f.endsWith("/sync-state.json") && !f.endsWith("sync-manifest.json")
     );
-    
+
     if (meaningfulChange || result.created + result.updated + result.deleted > 0) {
-      this.log.info("sync.write", { 
+      this.log.info("sync.write", {
         appliedEvents: applied,
         created: result.created,
         updated: result.updated,
@@ -339,10 +379,10 @@ export class Projection {
   private needsStateUpdate(): boolean {
     const existing = this.readSyncState();
     if (!existing) return true; // No existing state, need to write
-    
+
     const pending = this.pendingCursor;
     if (!pending.lastEventId && !pending.lastCreatedAt) return false; // Nothing new
-    
+
     // Update if we have a newer event
     if (pending.lastEventId && existing.cursor.lastEventId !== pending.lastEventId) {
       return true;
@@ -381,11 +421,11 @@ export class Projection {
 
   private gitCommit(result: WriteResult): void {
     const msgParts: string[] = [`spec-stream sync: +${result.created} ~${result.updated} -${result.deleted}`];
-    
+
     // Add breakdown by type if there were changes
     const byType = result.byType;
     const typeChanges: string[] = [];
-    
+
     if (byType.chapters > 0) typeChanges.push(`chapters:${byType.chapters}`);
     if (byType.slices > 0) typeChanges.push(`slices:${byType.slices}`);
     if (byType.lanes > 0) typeChanges.push(`lanes:${byType.lanes}`);
@@ -394,11 +434,11 @@ export class Projection {
     if (byType.scenarios > 0) typeChanges.push(`scenarios:${byType.scenarios}`);
     if (byType.htmlSnippets > 0) typeChanges.push(`snippets:${byType.htmlSnippets}`);
     if (byType.contentFiles > 0) typeChanges.push(`content:${byType.contentFiles}`);
-    
+
     if (typeChanges.length > 0) {
       msgParts.push(typeChanges.join(" "));
     }
-    
+
     const message = msgParts.join(" ");
     try {
       (this.commit ?? defaultCommit)(this.dir, message);

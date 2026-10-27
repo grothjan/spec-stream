@@ -63,10 +63,14 @@ export interface WriteResult {
 }
 
 /**
- * Make `rootDir` exactly match `tree`. Creates/updates changed files, deletes files not in
- * the tree, and prunes empty directories. Returns counts for logging.
+ * Make `rootDir` match `tree`. In full mode (default), the directory is treated as
+ * exclusively owned: any file not in the desired tree is deleted and empty directories
+ * are pruned. In partial mode (`partial: true`), only files whose parent directories are
+ * represented in the tree are candidates for deletion — files in unrelated directories
+ * are left untouched. This allows the projection to write only dirty entities without
+ * clobbering files that belong to clean (locally-modified) entities.
  */
-export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
+export function writeTree(rootDir: string, tree: DesiredTree, opts: { partial?: boolean } = {}): WriteResult {
   const root = resolve(rootDir);
   mkdirSync(root, { recursive: true });
 
@@ -113,8 +117,25 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
     existingFiles.delete(abs);
   }
 
+  // In partial mode, only delete files whose parent directory is represented in the
+  // desired tree. Files in directories not covered by this partial render belong to
+  // clean (possibly locally-modified) entities and must be left untouched.
+  const deletionCandidates: Set<string> = (() => {
+    if (!opts.partial) return existingFiles;
+    // Collect the set of absolute directories that appear in the desired tree.
+    const coveredDirs = new Set<string>();
+    for (const abs of desired.keys()) {
+      coveredDirs.add(dirname(abs));
+    }
+    const partial = new Set<string>();
+    for (const abs of existingFiles) {
+      if (coveredDirs.has(dirname(abs))) partial.add(abs);
+    }
+    return partial;
+  })();
+
   // 1. Delete files on disk that are not desired.
-  for (const abs of existingFiles) {
+  for (const abs of deletionCandidates) {
     rmSync(abs, { force: true });
     result.deleted++;
     result.byType.other++; // deleted files tracked as "other"
@@ -122,6 +143,8 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
 
   // 2. Create/update desired files (diff-based).
   for (const [abs, content] of desired) {
+    const rel = relative(root, abs);
+
     const existing = readIfExists(abs);
     if (existing === content) {
       result.unchanged++;
@@ -130,7 +153,6 @@ export function writeTree(rootDir: string, tree: DesiredTree): WriteResult {
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content, "utf8");
     
-    const rel = relative(root, abs);
     if (existing === undefined) {
       result.created++;
       result.changedFiles.push(rel);
