@@ -174,9 +174,21 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
   // and its sync-manifest entry) or by a manual local delete that sync has already
   // reconciled.  Emitting a delete op in this case would send a redundant API call for
   // an entity that no longer exists, producing 404/500 errors on every run.
+  //
+  // Exception 3: if sync-back-ids records the SAME dir under a *different* id, the
+  // manifest entry carries a client-generated alias id that never existed on the
+  // board — the board assigned its own id on create, which is tracked under the
+  // canonical dir (or via the alias entry itself).  A delete for the alias id would
+  // target a nonexistent entity (404/500).  The canonical board entity still gets
+  // its own delete via its manifest entry when its dir is also missing.
+  //
+  // Dedupe: the merged map can surface the same board id from two dirs (e.g. a
+  // sync-manifest entry and a sync-back-ids alias entry).  Emitting the delete
+  // twice makes the second call fail (404/500) — one delete per board id is enough.
   const syncManifestEntityIds = new Set(
     Object.values(syncManifest.entities).map((e) => e.id),
   );
+  const emittedDeleteIds = new Set<string>();
   for (const [entityDir, entry] of Object.entries(known)) {
     if (handledManifestDirs.has(entityDir)) continue;
     // Skip stale entries: same id already handled under the new directory name.
@@ -184,9 +196,16 @@ export function computeManifestDiff(opts: ManifestDiffOptions): EntityDiff[] {
     // Skip externally-deleted entities: only in sync-back-ids, absent from
     // sync-manifest, and directory no longer on disk.
     if (entry.id && !syncManifestEntityIds.has(entry.id)) continue;
+    // Skip client-alias records: the dir was pushed under a different,
+    // board-assigned id — this id never existed on the board.
+    const pushedId = syncBackIds.entities[entityDir]?.id;
+    if (pushedId && pushedId !== entry.id) continue;
+    // Skip duplicates: the same board id is already being deleted via another dir.
+    if (entry.id && emittedDeleteIds.has(entry.id)) continue;
     // Determine kind from the entityDir path.
     const kind = kindFromEntityDir(entityDir);
     if (!kind) continue;
+    if (entry.id) emittedDeleteIds.add(entry.id);
     diffs.push({
       status: "delete",
       entityDir,

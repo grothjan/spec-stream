@@ -352,6 +352,81 @@ describe("computeManifestDiff", () => {
     expect(elementDiff?.oldFields?.name).toBe("Board Name");
   });
 
+  it("does NOT emit a delete for a manifest entry whose dir was pushed under a board-assigned id", () => {
+    // Reproduces the scenario-uuid-duplicates bug:
+    //   1. Scenario created locally under a client-generated UUID (LOCAL_ID).
+    //   2. sync-back created it on the board — which assigned BOARD_ID — and
+    //      recorded `scenarios/LOCAL_ID → BOARD_ID` in sync-back-ids.json.
+    //   3. The sync daemon later wrote the canonical `scenarios/BOARD_ID` dir
+    //      and a sync-manifest entry for it — while a resume-load also put a
+    //      sync-manifest entry `scenarios/LOCAL_ID → LOCAL_ID` (the local file
+    //      still carried the client id).
+    //   4. The user deletes the stale `scenarios/LOCAL_ID` dir.
+    // Without the alias guard the LOCAL_ID manifest entry produces
+    // `DELETE /scenarios/LOCAL_ID` for an id that never existed on the board
+    // → HTTP 500 → failed run → stale sync-back-lock.
+    const LOCAL_ID = "scenario-local-uuid";
+    const BOARD_ID = "scenario-board-uuid";
+    const LOCAL_DIR = `${CHAPTER_DIR}/scenarios/${LOCAL_ID}`;
+    const BOARD_DIR = `${CHAPTER_DIR}/scenarios/${BOARD_ID}`;
+
+    // Disk: only the canonical board-id dir remains.
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, { id: CHAPTER_ID, name: "My Chapter", context: "App" });
+    writeJson(root, `${BOARD_DIR}/scenario.json`, { id: BOARD_ID, chapterId: CHAPTER_ID, name: "My Scenario" });
+
+    // sync-manifest tracks BOTH dirs (resume rendered the alias file too).
+    writeManifest(root, {
+      [CHAPTER_DIR]: { id: CHAPTER_ID },
+      [LOCAL_DIR]:   { id: LOCAL_ID },
+      [BOARD_DIR]:   { id: BOARD_ID },
+    });
+
+    // sync-back-ids records that the LOCAL_ID dir was pushed as BOARD_ID.
+    saveManifest(syncBackIdsPath(root), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [LOCAL_DIR]: { id: BOARD_ID },
+      },
+    });
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+    const deletes = diffs.filter((d) => d.status === "delete");
+    expect(deletes.some((d) => d.entityDir === LOCAL_DIR)).toBe(false);
+    expect(deletes.some((d) => d.id === LOCAL_ID)).toBe(false);
+    expect(deletes).toHaveLength(0);
+  });
+
+  it("emits a single delete for the board id when alias and canonical dirs are both missing", () => {
+    // Same alias setup, but the user deleted BOTH dirs (intended: delete the
+    // board entity). The board-side entity must be deleted exactly once under
+    // its real id — not twice, and never under the client alias id.
+    const LOCAL_ID = "scenario-local-uuid";
+    const BOARD_ID = "scenario-board-uuid";
+    const LOCAL_DIR = `${CHAPTER_DIR}/scenarios/${LOCAL_ID}`;
+    const BOARD_DIR = `${CHAPTER_DIR}/scenarios/${BOARD_ID}`;
+
+    writeJson(root, `${CHAPTER_DIR}/chapter.json`, { id: CHAPTER_ID, name: "My Chapter", context: "App" });
+
+    writeManifest(root, {
+      [CHAPTER_DIR]: { id: CHAPTER_ID },
+      [LOCAL_DIR]:   { id: LOCAL_ID },
+      [BOARD_DIR]:   { id: BOARD_ID },
+    });
+    saveManifest(syncBackIdsPath(root), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: {
+        [LOCAL_DIR]: { id: BOARD_ID },
+      },
+    });
+
+    const diffs = computeManifestDiff({ syncRootAbs: root });
+    const deletes = diffs.filter((d) => d.status === "delete");
+    expect(deletes.filter((d) => d.id === BOARD_ID)).toHaveLength(1);
+    expect(deletes.some((d) => d.id === LOCAL_ID)).toBe(false);
+  });
+
   it("still skips unchanged entities when every tracked content file exists on disk", () => {
     writeFullModel(root);
     // A tracked content file that still exists must not defeat the hash-match skip.
