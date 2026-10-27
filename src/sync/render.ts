@@ -114,7 +114,8 @@ export interface PartialRenderResult {
  */
 export function renderPartial(state: ModelState, dirty: DirtySet): PartialRenderResult {
   const tree: DesiredTree = new Map();
-  const dirsToDelete = new Set<string>();
+  // Seed from paths already resolved by deletion handlers at event-apply time.
+  const dirsToDelete = new Set<string>(dirty.dirsToDelete);
 
   // Always rewrite workspace.json and uuid-index.json — tiny, and must stay consistent.
   tree.set("workspace.json", json({ id: state.workspaceId, name: state.workspaceName }));
@@ -172,20 +173,26 @@ export function renderPartial(state: ModelState, dirty: DirtySet): PartialRender
   }
 
   // Render dirty slices.
+  // Render dirty slices — only the specific files that changed.
   for (const sliceId of dirty.slices) {
     const slice = state.slices.get(sliceId);
     if (!slice) {
-      // Slice deleted — we don't know the chapter anymore, but the uuid-index will no
-      // longer reference it; a full seed on restart will prune the orphaned directory.
-      // We can reconstruct the path if we still have it in the uuid-index on disk, but
-      // that's complex — defer to next seed. Mark nothing here.
+      // Slice deleted — defer directory cleanup to next seed (same as elements).
       continue;
     }
     const chapter = state.chapters.get(slice.chapterId);
-    if (chapter) renderSlice(tree, state, chapter, slice);
+    if (!chapter) continue;
+
+    const dirtyFiles = dirty.sliceFiles.get(sliceId);
+    if (!dirtyFiles || dirtyFiles.has("*")) {
+      renderSlice(tree, state, chapter, slice);
+    } else {
+      renderSliceFiles(tree, chapter, slice, dirtyFiles);
+    }
   }
 
-  // Render dirty lanes.
+  // Render dirty lanes — lane directory only has lane.json, all events touch it.
+  // No benefit from file-level tracking here.
   for (const laneId of dirty.lanes) {
     const lane = state.lanes.get(laneId);
     if (!lane) continue; // deleted — defer to next seed
@@ -193,19 +200,33 @@ export function renderPartial(state: ModelState, dirty: DirtySet): PartialRender
     if (chapter) renderLane(tree, chapter, lane);
   }
 
-  // Render dirty elements.
+  // Render dirty elements — only the specific files that changed.
   for (const elementId of dirty.elements) {
     const el = state.elements.get(elementId);
-    if (!el) continue; // deleted — defer to next seed
+    if (!el) continue; // deleted — defer directory cleanup to next seed
     const chapter = state.chapters.get(el.chapterId);
-    if (chapter) renderElement(tree, chapter, el);
+    if (!chapter) continue;
+
+    const dirtyFiles = dirty.elementFiles.get(elementId);
+    // No file-level info or "*" sentinel → render all files (safe default).
+    if (!dirtyFiles || dirtyFiles.has("*")) {
+      renderElement(tree, chapter, el);
+    } else {
+      // Render only the specific files that were touched by this event.
+      renderElementFiles(tree, chapter, el, dirtyFiles);
+    }
   }
 
-  // Render dirty milestones.
+  // Render dirty milestones — only the specific files that changed.
   for (const milestoneId of dirty.milestones) {
     const m = state.milestones.get(milestoneId);
     if (m) {
-      renderMilestone(tree, m);
+      const dirtyFiles = dirty.milestoneFiles.get(milestoneId);
+      if (!dirtyFiles || dirtyFiles.has("*")) {
+        renderMilestone(tree, m);
+      } else {
+        renderMilestoneFiles(tree, m, dirtyFiles);
+      }
     } else {
       dirsToDelete.add(`milestones/${milestoneId}`);
     }
@@ -224,11 +245,7 @@ export function renderPartial(state: ModelState, dirty: DirtySet): PartialRender
     const snippet = state.htmlSnippets.get(slug);
     if (snippet) {
       renderHtmlSnippet(tree, snippet);
-    } else {
-      // html-snippets are flat files: html-snippets/<slug>.html + .json
-      const safeSlug = sanitizeSegment(slug, "snippet");
-      dirsToDelete.add(`html-snippets/${safeSlug}.html`);
-      dirsToDelete.add(`html-snippets/${safeSlug}.json`);
+      // Deleted snippet: paths already in dirsToDelete via html-snippet-deleted handler.
     }
   }
 
@@ -353,6 +370,43 @@ function renderSlice(
   renderComments(tree, `${dir}/comments`, slice.comments);
 }
 
+/**
+ * Render only the specific files within a slice directory listed in `dirtyFiles`.
+ * Files: "slice.json", "details.md", "comments".
+ */
+function renderSliceFiles(
+  tree: DesiredTree,
+  chapter: ChapterState,
+  slice: SliceState,
+  dirtyFiles: Set<string>,
+): void {
+  const dir = sliceDir(chapter, slice);
+  if (dirtyFiles.has("slice.json")) {
+    tree.set(
+      `${dir}/slice.json`,
+      json({
+        id: slice.id,
+        label: slice.label,
+        index: slice.index,
+        status: slice.status,
+        width: slice.width,
+        icon: slice.icon,
+        milestoneId: slice.milestoneId,
+        milestoneName: slice.milestoneName,
+        assignee: slice.assignee,
+        estimate: slice.estimate,
+        timeSpent: slice.timeSpent,
+      }),
+    );
+  }
+  if (dirtyFiles.has("details.md")) {
+    tree.set(`${dir}/details.md`, markdown(slice.details));
+  }
+  if (dirtyFiles.has("comments")) {
+    renderComments(tree, `${dir}/comments`, slice.comments);
+  }
+}
+
 // ─────────────────────── lane (once per chapter) ───────────────────────
 
 function renderLane(
@@ -406,6 +460,63 @@ function renderElement(
     tree.set(`${dir}/play-type.ts`, `type Payload = ${el.playType}`);
   }
   renderComments(tree, `${dir}/comments`, el.comments);
+}
+
+/**
+ * Render only the specific files within an element directory that are listed in
+ * `dirtyFiles`. Used by `renderPartial` to avoid overwriting locally-edited files
+ * (e.g. play-function.ts) when an unrelated event (e.g. element-description-changed)
+ * touches only a subset of the element's files.
+ *
+ * The `dirtyFiles` set contains file basenames: "element.json", "description.md",
+ * "details.md", "play-function.ts", "play-type.ts", "comments".
+ */
+function renderElementFiles(
+  tree: DesiredTree,
+  chapter: ChapterState,
+  el: ElementState,
+  dirtyFiles: Set<string>,
+): void {
+  const dir = elementDir(chapter, el);
+
+  if (dirtyFiles.has("element.json")) {
+    tree.set(
+      `${dir}/element.json`,
+      json({
+        id: el.id,
+        type: el.type,
+        name: el.name,
+        context: el.context,
+        laneId: el.laneId,
+        sliceId: el.sliceId,
+        index: el.index,
+        icon: el.icon,
+        noArrowSource: el.noArrowSource,
+        noArrowTarget: el.noArrowTarget,
+      }),
+    );
+  }
+  if (dirtyFiles.has("description.md")) {
+    tree.set(`${dir}/description.md`, markdown(el.description));
+  }
+  if (dirtyFiles.has("details.md")) {
+    tree.set(`${dir}/details.md`, markdown(el.details));
+  }
+  if (dirtyFiles.has("play-function.ts")) {
+    // Only emit if board has a value. If undefined, don't emit anything — the local
+    // file (if any) was added by the user and should not be deleted in partial mode.
+    if (el.playFunction !== undefined) {
+      tree.set(`${dir}/play-function.ts`, el.playFunction);
+    }
+  }
+  if (dirtyFiles.has("play-type.ts")) {
+    if (el.playType !== undefined) {
+      tree.set(`${dir}/play-type.ts`, `type Payload = ${el.playType}`);
+    }
+  }
+  if (dirtyFiles.has("comments")) {
+    renderComments(tree, `${dir}/comments`, el.comments);
+  }
 }
 
 // ─────────────────────── comments ───────────────────────
@@ -478,6 +589,37 @@ function renderMilestone(tree: DesiredTree, m: MilestoneState): void {
     }),
   );
   tree.set(`${dir}/description.md`, markdown(m.description));
+}
+
+/**
+ * Render only the specific files within a milestone directory listed in `dirtyFiles`.
+ * Files: "milestone.json", "description.md".
+ */
+function renderMilestoneFiles(
+  tree: DesiredTree,
+  m: MilestoneState,
+  dirtyFiles: Set<string>,
+): void {
+  const dir = `milestones/${m.id}`;
+  if (dirtyFiles.has("milestone.json")) {
+    tree.set(
+      `${dir}/milestone.json`,
+      json({
+        id: m.id,
+        name: m.name,
+        deadline: m.deadline,
+        color: m.color,
+        isCompleted: m.isCompleted,
+        completedAt: m.completedAt,
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt,
+        slices: m.slices,
+      }),
+    );
+  }
+  if (dirtyFiles.has("description.md")) {
+    tree.set(`${dir}/description.md`, markdown(m.description));
+  }
 }
 
 // ─────────────────────── html snippets ───────────────────────

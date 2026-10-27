@@ -53,6 +53,32 @@ export interface DirtySet {
   sharedLaneDetails: Set<string>;
   /** True when workspace-level fields (name) changed. */
   workspace: boolean;
+  /**
+   * Per-element file-level dirty tracking.
+   * Maps element id → set of file basenames that need to be rewritten.
+   * The special sentinel `"*"` means "all files for this element".
+   * When an element id is in `elements` but absent from this map, all files are written
+   * (backwards-compatible default — no regression for callers that only set `elements`).
+   */
+  elementFiles: Map<string, Set<string>>;
+  /**
+   * Per-slice file-level dirty tracking (same sentinel convention as elementFiles).
+   * Files: "slice.json", "details.md", "comments", "*".
+   */
+  sliceFiles: Map<string, Set<string>>;
+  /**
+   * Per-milestone file-level dirty tracking (same sentinel convention as elementFiles).
+   * Files: "milestone.json", "description.md", "*".
+   */
+  milestoneFiles: Map<string, Set<string>>;
+  /**
+   * Relative paths (from model root) of entity directories or files to delete immediately
+   * during a partial write. Populated by deletion handlers at the time they still hold the
+   * entity reference (so the path can be derived from state before the entity is removed).
+   * Avoids the need to do a disk UUID-index lookup in renderPartial.
+   * Examples: "chapters/c1/elements/el1", "chapters/c1/slices/s1", "milestones/m1".
+   */
+  dirsToDelete: Set<string>;
 }
 
 export function emptyDirtySet(): DirtySet {
@@ -66,7 +92,23 @@ export function emptyDirtySet(): DirtySet {
     htmlSnippets: new Set(),
     sharedLaneDetails: new Set(),
     workspace: false,
+    elementFiles: new Map(),
+    sliceFiles: new Map(),
+    milestoneFiles: new Map(),
+    dirsToDelete: new Set(),
   };
+}
+
+/** Merge file-level dirty maps (helper shared by mergeDirty). */
+function mergeFileMaps(target: Map<string, Set<string>>, src: Map<string, Set<string>>): void {
+  for (const [id, files] of src) {
+    const existing = target.get(id);
+    if (!existing) {
+      target.set(id, new Set(files));
+    } else {
+      for (const f of files) existing.add(f);
+    }
+  }
 }
 
 export function mergeDirty(target: DirtySet, src: DirtySet): void {
@@ -79,6 +121,10 @@ export function mergeDirty(target: DirtySet, src: DirtySet): void {
   for (const id of src.htmlSnippets) target.htmlSnippets.add(id);
   for (const id of src.sharedLaneDetails) target.sharedLaneDetails.add(id);
   if (src.workspace) target.workspace = true;
+  mergeFileMaps(target.elementFiles, src.elementFiles);
+  mergeFileMaps(target.sliceFiles, src.sliceFiles);
+  mergeFileMaps(target.milestoneFiles, src.milestoneFiles);
+  for (const p of src.dirsToDelete) target.dirsToDelete.add(p);
 }
 
 /** Apply one event, mutating and returning `state`. Never throws on bad payloads. */
@@ -349,6 +395,58 @@ function removeLane(state: ModelState, laneId: string): void {
 
 type Handler = (state: ModelState, event: ChangelogEvent, dirty: DirtySet) => void;
 
+/**
+ * Mark specific files as dirty for an element.
+ * Uses the sentinel "*" to mean "all files" (e.g. on add/replace/remove).
+ * Always also adds the element id to d.elements so renderPartial knows the element is dirty.
+ */
+function markElementFiles(d: DirtySet, id: string, ...files: string[]): void {
+  d.elements.add(id);
+  const existing = d.elementFiles.get(id);
+  if (existing?.has("*")) return; // already marked as fully dirty
+  if (files.includes("*")) {
+    d.elementFiles.set(id, new Set(["*"]));
+    return;
+  }
+  if (!existing) {
+    d.elementFiles.set(id, new Set(files));
+  } else {
+    for (const f of files) existing.add(f);
+  }
+}
+
+/** Same as markElementFiles but for slices. Files: "slice.json", "details.md", "comments", "*". */
+function markSliceFiles(d: DirtySet, id: string, ...files: string[]): void {
+  d.slices.add(id);
+  const existing = d.sliceFiles.get(id);
+  if (existing?.has("*")) return;
+  if (files.includes("*")) {
+    d.sliceFiles.set(id, new Set(["*"]));
+    return;
+  }
+  if (!existing) {
+    d.sliceFiles.set(id, new Set(files));
+  } else {
+    for (const f of files) existing.add(f);
+  }
+}
+
+/** Same as markElementFiles but for milestones. Files: "milestone.json", "description.md", "*". */
+function markMilestoneFiles(d: DirtySet, id: string, ...files: string[]): void {
+  d.milestones.add(id);
+  const existing = d.milestoneFiles.get(id);
+  if (existing?.has("*")) return;
+  if (files.includes("*")) {
+    d.milestoneFiles.set(id, new Set(["*"]));
+    return;
+  }
+  if (!existing) {
+    d.milestoneFiles.set(id, new Set(files));
+  } else {
+    for (const f of files) existing.add(f);
+  }
+}
+
 const HANDLERS: Record<string, Handler> = {
   // ── Chapter ──
   "chapter-added": (s, e, d) => {
@@ -396,14 +494,14 @@ const HANDLERS: Record<string, Handler> = {
     if (e.chapterId) {
       putSliceFromRaw(s, e.chapterId, obj(newValue(e).slice));
       const id = str(obj(newValue(e).slice).id);
-      if (id) { d.slices.add(id); d.chapters.add(e.chapterId); } // index.md changes
+      if (id) { markSliceFiles(d, id, "*"); d.chapters.add(e.chapterId); }
       d.workspace = true;
     }
   },
   "slice-renamed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const label = str(newValue(e).label);
-    if (sl && label !== undefined) { sl.label = label; d.slices.add(sl.id); }
+    if (sl && label !== undefined) { sl.label = label; markSliceFiles(d, sl.id, "slice.json"); }
   },
   "slices-reordered": (s, e, d) => {
     const ids = strArr(newValue(e).sliceIds);
@@ -413,54 +511,57 @@ const HANDLERS: Record<string, Handler> = {
       const c = s.chapters.get(e.chapterId);
       if (c) { c.sliceOrder = ids.filter((id) => s.slices.has(id)); d.chapters.add(e.chapterId); }
     }
-    for (const id of ids) d.slices.add(id);
+    for (const id of ids) markSliceFiles(d, id, "slice.json");
   },
   "slice-removed": (s, e, d) => {
     if (e.sliceId) {
       const sl = s.slices.get(e.sliceId);
-      if (sl) d.chapters.add(sl.chapterId);
+      if (sl) {
+        d.dirsToDelete.add(`chapters/${sl.chapterId}/slices/${sl.id}`);
+        d.chapters.add(sl.chapterId);
+      }
       removeSlice(s, e.sliceId);
-      d.slices.add(e.sliceId);
+      markSliceFiles(d, e.sliceId, "*");
       d.workspace = true;
     }
   },
   "slice-details-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const details = str(newValue(e).details);
-    if (sl && details !== undefined) { sl.details = details; d.slices.add(sl.id); }
+    if (sl && details !== undefined) { sl.details = details; markSliceFiles(d, sl.id, "details.md"); }
   },
   "slice-status-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const status = str(newValue(e).status);
-    if (sl && status !== undefined) { sl.status = status; d.slices.add(sl.id); }
+    if (sl && status !== undefined) { sl.status = status; markSliceFiles(d, sl.id, "slice.json"); }
   },
   "slice-icon-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const icon = str(newValue(e).icon);
-    if (sl && icon !== undefined) { sl.icon = icon; d.slices.add(sl.id); }
+    if (sl && icon !== undefined) { sl.icon = icon; markSliceFiles(d, sl.id, "slice.json"); }
   },
   "slice-resized": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const width = num(newValue(e).width);
-    if (sl && width !== undefined) { sl.width = width; d.slices.add(sl.id); }
+    if (sl && width !== undefined) { sl.width = width; markSliceFiles(d, sl.id, "slice.json"); }
   },
   "slice-assignee-set": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
-    if (sl) { sl.assignee = str(newValue(e).assigneeId); d.slices.add(sl.id); }
+    if (sl) { sl.assignee = str(newValue(e).assigneeId); markSliceFiles(d, sl.id, "slice.json"); }
   },
   "slice-estimate-set": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     sl.estimate = str(newValue(e).estimate);
     syncMilestoneSliceRef(s, sl);
-    d.slices.add(sl.id);
+    markSliceFiles(d, sl.id, "slice.json");
   },
   "slice-time-spent-set": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     sl.timeSpent = str(newValue(e).timeSpent);
     syncMilestoneSliceRef(s, sl);
-    d.slices.add(sl.id);
+    markSliceFiles(d, sl.id, "slice.json");
   },
   "slice-milestone-set": (s, e, d) => {
     const nv = newValue(e);
@@ -469,13 +570,13 @@ const HANDLERS: Record<string, Handler> = {
     const action = str(nv.action) ?? "add";
     if (!sliceId || !milestoneId) return;
     setSliceMilestone(s, sliceId, milestoneId, action === "remove" ? "remove" : "add");
-    d.slices.add(sliceId);
+    markSliceFiles(d, sliceId, "slice.json");
     d.milestones.add(milestoneId);
   },
   "new-slice-comment-written": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     const c = commentFromRaw(obj(newValue(e).comment));
-    if (sl && c) { sl.comments.push(c); d.slices.add(sl.id); }
+    if (sl && c) { sl.comments.push(c); markSliceFiles(d, sl.id, "comments"); }
   },
   "slice-comment-changed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
@@ -484,13 +585,13 @@ const HANDLERS: Record<string, Handler> = {
     const commentId = str(nv.commentId);
     const text = str(nv.text);
     const c = sl.comments.find((x) => x.id === commentId);
-    if (c && text !== undefined) { c.text = text; d.slices.add(sl.id); }
+    if (c && text !== undefined) { c.text = text; markSliceFiles(d, sl.id, "comments"); }
   },
   "slice-comment-removed": (s, e, d) => {
     const sl = e.sliceId && s.slices.get(e.sliceId);
     if (!sl) return;
     const commentId = str(newValue(e).commentId) ?? str(obj(oldValue(e).comment).id);
-    if (commentId) { sl.comments = sl.comments.filter((x) => x.id !== commentId); d.slices.add(sl.id); }
+    if (commentId) { sl.comments = sl.comments.filter((x) => x.id !== commentId); markSliceFiles(d, sl.id, "comments"); }
   },
   "slices-copied": (s, e, d) => {
     const target = str(e.data.targetChapterId) ?? e.chapterId ?? undefined;
@@ -499,7 +600,7 @@ const HANDLERS: Record<string, Handler> = {
       for (const raw of slices) {
         putSliceFromRaw(s, target, obj(raw));
         const id = str(obj(raw).id);
-        if (id) d.slices.add(id);
+        if (id) markSliceFiles(d, id, "*");
       }
       d.chapters.add(target);
       d.workspace = true;
@@ -519,7 +620,7 @@ const HANDLERS: Record<string, Handler> = {
       for (const overriddenId of overriddenSliceIds) {
         targetChapter.sliceOrder = targetChapter.sliceOrder.filter((x) => x !== overriddenId);
         s.slices.delete(overriddenId);
-        d.slices.add(overriddenId);
+        markSliceFiles(d, overriddenId, "*");
       }
     }
 
@@ -533,7 +634,7 @@ const HANDLERS: Record<string, Handler> = {
       }
       // Upsert the slice itself (updates index and label from newValue).
       putSliceFromRaw(s, target, sliceRaw);
-      if (id) d.slices.add(id);
+      if (id) markSliceFiles(d, id, "slice.json");
 
       // Update the sliceId on all elements that belong to this moved slice.
       const elements = Array.isArray(obj(raw).elements) ? (obj(raw).elements as unknown[]) : [];
@@ -541,7 +642,7 @@ const HANDLERS: Record<string, Handler> = {
         const el = s.elements.get(str(obj(elRaw).id) ?? "");
         if (el) {
           const newSliceId = str(obj(raw).newSliceId) ?? str(sliceRaw.id);
-          if (newSliceId) { el.sliceId = newSliceId; d.elements.add(el.id); }
+          if (newSliceId) { el.sliceId = newSliceId; markElementFiles(d, el.id, "element.json"); }
         }
       }
     }
@@ -592,7 +693,11 @@ const HANDLERS: Record<string, Handler> = {
     const laneId = str(e.data.laneId) ?? str(obj(oldValue(e).lane).id);
     if (laneId) {
       const lane = s.lanes.get(laneId);
-      if (lane) { d.sharedLaneDetails.add(laneKeyOf(lane)); d.chapters.add(lane.chapterId); }
+      if (lane) {
+        d.dirsToDelete.add(`chapters/${lane.chapterId}/lanes/${lane.id}`);
+        d.sharedLaneDetails.add(laneKeyOf(lane));
+        d.chapters.add(lane.chapterId);
+      }
       removeLane(s, laneId);
       d.lanes.add(laneId);
       d.workspace = true;
@@ -629,7 +734,7 @@ const HANDLERS: Record<string, Handler> = {
     if (e.chapterId) {
       putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
       const id = str(obj(newValue(e).element).id);
-      if (id) d.elements.add(id);
+      if (id) markElementFiles(d, id, "*");
       d.workspace = true;
     }
   },
@@ -637,7 +742,7 @@ const HANDLERS: Record<string, Handler> = {
     if (e.chapterId) {
       putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
       const id = str(obj(newValue(e).element).id);
-      if (id) d.elements.add(id);
+      if (id) markElementFiles(d, id, "*");
       d.workspace = true;
     }
   },
@@ -645,7 +750,7 @@ const HANDLERS: Record<string, Handler> = {
     if (e.chapterId) {
       putElementFromRaw(s, e.chapterId, obj(newValue(e).element));
       const id = str(obj(newValue(e).element).id);
-      if (id) d.elements.add(id);
+      if (id) markElementFiles(d, id, "*");
       d.workspace = true;
     }
   },
@@ -659,29 +764,29 @@ const HANDLERS: Record<string, Handler> = {
     if (laneId !== undefined) el.laneId = laneId;
     if (sliceId !== undefined) el.sliceId = sliceId;
     if (index !== undefined) el.index = index;
-    d.elements.add(el.id);
+    markElementFiles(d, el.id, "element.json");
   },
   "element-renamed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const name = str(newValue(e).name);
     if (!el || name === undefined) return;
     el.name = name;
-    d.elements.add(el.id);
+    markElementFiles(d, el.id, "element.json");
   },
   "element-description-changed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const description = str(newValue(e).description);
-    if (el && description !== undefined) { el.description = description; d.elements.add(el.id); }
+    if (el && description !== undefined) { el.description = description; markElementFiles(d, el.id, "description.md"); }
   },
   "element-details-changed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const details = str(newValue(e).details);
-    if (el && details !== undefined) { el.details = details; d.elements.add(el.id); }
+    if (el && details !== undefined) { el.details = details; markElementFiles(d, el.id, "details.md"); }
   },
   "element-details-synchronized": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const details = str(newValue(e).details);
-    if (el && details !== undefined) { el.details = details; d.elements.add(el.id); }
+    if (el && details !== undefined) { el.details = details; markElementFiles(d, el.id, "details.md"); }
   },
   "element-config-changed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
@@ -694,18 +799,19 @@ const HANDLERS: Record<string, Handler> = {
     if (noArrowSource !== undefined) el.noArrowSource = noArrowSource;
     if (noArrowTarget !== undefined) el.noArrowTarget = noArrowTarget;
     applyPlayConfig(el, nv);
-    d.elements.add(el.id);
+    // element.json covers icon/arrows; play-function.ts and play-type.ts cover play config.
+    markElementFiles(d, el.id, "element.json", "play-function.ts", "play-type.ts");
   },
   "element-config-synced": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     applyPlayConfig(el, newValue(e));
-    d.elements.add(el.id);
+    markElementFiles(d, el.id, "play-function.ts", "play-type.ts");
   },
   "element-comment-added": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     const c = commentFromRaw(newValue(e));
-    if (el && c) { el.comments.push(c); d.elements.add(el.id); }
+    if (el && c) { el.comments.push(c); markElementFiles(d, el.id, "comments"); }
   },
   "element-comment-updated": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
@@ -713,31 +819,36 @@ const HANDLERS: Record<string, Handler> = {
     const commentId = str(e.data.commentId);
     const text = str(newValue(e).text);
     const c = el.comments.find((x) => x.id === commentId);
-    if (c && text !== undefined) { c.text = text; d.elements.add(el.id); }
+    if (c && text !== undefined) { c.text = text; markElementFiles(d, el.id, "comments"); }
   },
   "element-comment-removed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
     if (!el) return;
     const commentId = str(e.data.commentId) ?? str(obj(oldValue(e).comment).id);
-    if (commentId) { el.comments = el.comments.filter((x) => x.id !== commentId); d.elements.add(el.id); }
+    if (commentId) { el.comments = el.comments.filter((x) => x.id !== commentId); markElementFiles(d, el.id, "comments"); }
   },
   "elements-reordered": (s, e, d) => {
     const ids = strArr(newValue(e).elementIds);
     if (ids) {
       reindex(ids, (id) => s.elements.get(id));
-      for (const id of ids) d.elements.add(id);
+      for (const id of ids) markElementFiles(d, id, "element.json");
     }
   },
   "element-removed": (s, e, d) => {
     const el = e.elementId && s.elements.get(e.elementId);
-    if (el) { removeElement(s, el); d.elements.add(el.id); d.workspace = true; }
+    if (el) {
+      d.dirsToDelete.add(`chapters/${el.chapterId}/elements/${el.id}`);
+      removeElement(s, el);
+      markElementFiles(d, el.id, "*");
+      d.workspace = true;
+    }
   },
 
   // ── Milestone ──
   "milestone-added": (s, e, d) => {
     putMilestoneFromRaw(s, obj(newValue(e).milestone));
     const id = str(obj(newValue(e).milestone).id);
-    if (id) d.milestones.add(id);
+    if (id) markMilestoneFiles(d, id, "*");
     d.workspace = true;
   },
   "milestone-settings-changed": (s, e, d) => {
@@ -755,7 +866,12 @@ const HANDLERS: Record<string, Handler> = {
     if (deadline !== undefined) m.deadline = deadline;
     if (color !== undefined) m.color = color;
     if (isCompleted !== undefined) m.isCompleted = isCompleted;
-    d.milestones.add(m.id);
+    // Mark only the files that actually changed.
+    const structuralChanged = name !== undefined || deadline !== undefined || color !== undefined || isCompleted !== undefined;
+    const descriptionChanged = description !== undefined;
+    if (structuralChanged) markMilestoneFiles(d, m.id, "milestone.json");
+    if (descriptionChanged) markMilestoneFiles(d, m.id, "description.md");
+    if (!structuralChanged && !descriptionChanged) markMilestoneFiles(d, m.id, "milestone.json"); // fallback
   },
   "milestone-deleted": (s, e, d) => {
     const id = str(e.data.milestoneId) ?? str(obj(oldValue(e).milestone).id);
@@ -765,11 +881,11 @@ const HANDLERS: Record<string, Handler> = {
       if (sl.milestoneId === id) {
         sl.milestoneId = undefined;
         sl.milestoneName = undefined;
-        d.slices.add(sl.id);
+        markSliceFiles(d, sl.id, "slice.json");
       }
     }
     s.milestones.delete(id);
-    d.milestones.add(id);
+    markMilestoneFiles(d, id, "*");
     d.workspace = true;
   },
 
@@ -837,7 +953,13 @@ const HANDLERS: Record<string, Handler> = {
   },
   "scenario-deleted": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId) ?? str(obj(obj(e.data.oldValue).scenario).id);
-    if (scenarioId) { s.scenarios.delete(scenarioId); d.scenarios.add(scenarioId); d.workspace = true; }
+    if (scenarioId) {
+      const sc = s.scenarios.get(scenarioId);
+      if (sc) d.dirsToDelete.add(`chapters/${sc.chapterId}/scenarios/${sc.id}`);
+      s.scenarios.delete(scenarioId);
+      d.scenarios.add(scenarioId);
+      d.workspace = true;
+    }
   },
   "scenario-expectation-set": (s, e, d) => {
     const scenarioId = str(e.data.scenarioId);
@@ -904,7 +1026,15 @@ const HANDLERS: Record<string, Handler> = {
   },
   "html-snippet-deleted": (s, e, d) => {
     const slug = str(e.data.slug) ?? str(obj(obj(oldValue(e).snippet)).slug);
-    if (slug) { s.htmlSnippets.delete(slug); d.htmlSnippets.add(slug); d.workspace = true; }
+    if (slug) {
+      // html-snippets are flat files — sanitize slug the same way renderHtmlSnippet does.
+      const safeSlug = slug.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "snippet";
+      d.dirsToDelete.add(`html-snippets/${safeSlug}.html`);
+      d.dirsToDelete.add(`html-snippets/${safeSlug}.json`);
+      s.htmlSnippets.delete(slug);
+      d.htmlSnippets.add(slug);
+      d.workspace = true;
+    }
   },
 };
 
