@@ -191,6 +191,9 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
   if (!dryRun) {
     const idsPath = syncBackIdsPath(syncDirAbs);
     const existing = loadManifest(idsPath);
+    // Loaded once up-front: used to record `baseHash` on each written entry (the
+    // sync-manifest hash this push supersedes) and for the GC pass below.
+    const syncManifest = loadManifest(syncManifestPath(syncDirAbs));
     let wrote = 0;
 
     for (const diff of diffs) {
@@ -215,6 +218,12 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
       const entry: ManifestEntry = {
         id,
         hash,
+        // Record the sync-manifest hash this entry supersedes so mergeManifests can
+        // tell whether sync has since pulled newer board state (hash advanced → the
+        // sync-manifest entry wins again) or is still stale (hash unchanged → this
+        // entry wins). `null` marks that no hashed sync-manifest entry existed —
+        // e.g. fresh creates or manifests written before the hash feature.
+        baseHash: syncManifest.entities[diff.entityDir]?.hash ?? null,
         ...(Object.keys(fields).length > 0 && { fields }),
         ...(Object.keys(contentHashes).length > 0 && { contentHashes }),
       };
@@ -251,7 +260,7 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
     // API returns 404/500 since the entity is already gone).  If an id is absent from
     // sync-manifest AND its directory no longer exists on disk, the entity is gone —
     // clean up the stale sync-back-ids entry so we stop retrying.
-    const syncManifest = loadManifest(syncManifestPath(syncDirAbs));
+    //
     // Build a map from id → canonical dir according to sync-manifest.
     const manifestIdToDir = new Map<string, string>();
     for (const [dir, entry] of Object.entries(syncManifest.entities)) {

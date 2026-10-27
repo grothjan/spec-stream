@@ -249,6 +249,77 @@ describe("runSyncBack — html-snippet GC regression", () => {
     expect(calls[0]!.body).toMatchObject({ snippet: "<div>Changed</div>" });
   });
 
+  // ─── Stale sync-manifest must not re-trigger already-pushed updates ────────
+
+  it("does not re-push an update whose sync-back-ids entry is newer than sync-manifest", async () => {
+    // Reproduces the reported bug end-to-end:
+    //   1. sync pulled an element → sync-manifest.json holds hash H1.
+    //   2. Local rename → sync-back pushes it, writes a fresh entry (hash H2)
+    //      into sync-back-ids.json.
+    //   3. sync does NOT run in between (no spec-stream run pull), so
+    //      sync-manifest.json still holds the stale H1 entry.
+    //   Without baseHash the merge lets the stale sync-manifest entry win and
+    //   every subsequent run re-emits the same rename op.
+    const chapterId = "11111111-1111-4111-8111-111111111111";
+    const elementId = "22222222-2222-4222-8222-222222222222";
+    const elementDir = `chapters/${chapterId}/elements/${elementId}`;
+
+    // Seed disk + sync-manifest exactly as the sync process would have written
+    // them (buildManifestFromTree → hash parity with computeDiskHash).
+    const chapterJson = { id: chapterId, name: "Chapter", context: "App" };
+    const elementJson = { id: elementId, name: "Original Name", type: "command" };
+    const tree = new Map<string, string>([
+      [`chapters/${chapterId}/chapter.json`, JSON.stringify(chapterJson, null, 2)],
+      [`${elementDir}/element.json`, JSON.stringify(elementJson, null, 2)],
+    ]);
+    for (const [rel, content] of tree) {
+      const abs = join(modelDir(projectDir), rel);
+      mkdirSync(abs.slice(0, abs.lastIndexOf("/")), { recursive: true });
+      writeFileSync(abs, content, "utf8");
+    }
+    const seededManifest = buildManifestFromTree(tree);
+    writeSyncManifest(projectDir, seededManifest.entities);
+    const seededHash = seededManifest.entities[elementDir]!.hash;
+
+    // Local rename — the only change.
+    writeFileSync(
+      join(modelDir(projectDir), elementDir, "element.json"),
+      JSON.stringify({ ...elementJson, name: "Renamed" }, null, 2),
+      "utf8",
+    );
+
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const fetchImpl = makeFetch(calls);
+
+    // ── Run 1: pushes the rename ──
+    const first = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl,
+      omitChecks: true,
+    });
+    expect(first.failed).toBe(0);
+    expect(first.executed).toBe(1);
+    expect(calls).toHaveLength(1);
+
+    // The persisted entry records which sync-manifest hash it superseded.
+    const ids = loadManifest(syncBackIdsPath(modelDir(projectDir)));
+    const entry = ids.entities[elementDir];
+    expect(entry).toBeDefined();
+    expect(entry?.baseHash).toBe(seededHash);
+
+    // ── Run 2: nothing changed, sync-manifest still stale → no ops ──
+    calls.length = 0;
+    const second = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl,
+      omitChecks: true,
+    });
+    expect(second.operationCount).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
   // ─── GC still removes genuinely stale entries ─────────────────────────────
 
   it("GC removes a sync-back-ids entry for an externally deleted snippet", async () => {

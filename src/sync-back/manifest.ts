@@ -38,6 +38,18 @@ export interface ManifestEntry {
    */
   hash?: string;
   /**
+   * Only set on entries in sync-back-ids.json: the `hash` of the sync-manifest.json
+   * entry that was current when sync-back wrote this entry — `null` when no hashed
+   * sync-manifest entry existed at that time (fresh creates, or manifests written
+   * before the hash feature). Absent on entries written by older versions.
+   *
+   * mergeManifests uses it as a compare-and-set marker: the sync-back-ids entry is
+   * only allowed to shadow the sync-manifest entry while the sync-manifest entry is
+   * unchanged (`baseHash === syncManifest.hash`). Once sync has pulled newer board
+   * state and advanced the sync-manifest hash, the sync-manifest entry wins again.
+   */
+  baseHash?: string | null;
+  /**
    * Snapshot of the key mutable fields from the entity's primary json at the time
    * the manifest was last written. Used by operationBuilder to detect which specific
    * fields changed so it only emits the ops that are actually needed.
@@ -130,31 +142,48 @@ export function mergeManifests(
   syncManifest: SyncManifest,
   syncBackIds: SyncManifest,
 ): Record<string, ManifestEntry> {
-  // sync-manifest is authoritative for structural fields (id, hash, fields, contentHashes).
-  // sync-back-ids fills gaps for entities not yet in the sync-manifest.
-  // However, sync-manifest may lag behind sync-back on `extra` data (e.g. expectations
-  // written by sync-back after the last sync pass) — so we forward-merge `extra` from
-  // sync-back-ids when the sync-manifest entry has no `extra` of its own.
+  // sync-manifest is authoritative for structural fields (id, hash, fields,
+  // contentHashes) — EXCEPT when a sync-back-ids entry proves it is newer: sync-back
+  // records the sync-manifest hash it superseded in `baseHash`. While the
+  // sync-manifest entry still carries that exact hash, sync has not absorbed the
+  // pushed change yet, so the sync-back-ids entry (written after a successful push,
+  // with the current disk hash) is the newest known state and wins. Once sync pulls
+  // the board events and advances the sync-manifest hash, `baseHash` no longer
+  // matches and the sync-manifest entry wins again — the sync-back-ids entry is
+  // stale but harmless (it is overwritten on the next successful sync-back run).
+  //
+  // sync-manifest may also lag behind sync-back on `extra` data (e.g. expectations
+  // written by sync-back after the last sync pass) — so we forward-merge `extra`
+  // when the winning entry has none of its own.
   const merged: Record<string, ManifestEntry> = {
     ...syncBackIds.entities,
     ...syncManifest.entities,
   };
   for (const [dir, syncBackEntry] of Object.entries(syncBackIds.entities)) {
-    const mergedEntry = merged[dir];
-    if (!mergedEntry) continue;
+    const syncManifestEntry = syncManifest.entities[dir];
+    if (!syncManifestEntry) continue;
+    const syncBackIsNewer =
+      syncBackEntry.baseHash !== undefined &&
+      syncBackEntry.baseHash === (syncManifestEntry.hash ?? null);
+    let mergedEntry = merged[dir];
+    if (syncBackIsNewer) {
+      merged[dir] = mergedEntry = syncBackEntry;
+    }
     if (syncBackEntry.extra && !mergedEntry.extra) {
       merged[dir] = { ...mergedEntry, extra: syncBackEntry.extra };
+      mergedEntry = merged[dir];
     }
-    // Union contentHashes from both manifests: sync-back-ids may track content
-    // files that sync-manifest doesn't know yet (e.g. a play-function.ts pushed
-    // by sync-back whose resulting board events sync has not yet processed).
-    // Without the union, deleting such a file is invisible to the diff — the
-    // merged entry would look identical to the disk state.
-    if (syncBackEntry.contentHashes) {
-      merged[dir] = {
-        ...merged[dir],
-        contentHashes: { ...syncBackEntry.contentHashes, ...mergedEntry.contentHashes },
-      };
+    // Union contentHashes from both manifests: the loser may track content files
+    // the winner doesn't know yet (e.g. a play-function.ts pushed by sync-back whose
+    // resulting board events sync has not yet processed, or a file only known to an
+    // older sync-back-ids entry). Without the union, deleting such a file is
+    // invisible to the diff — the merged entry would look identical to the disk
+    // state. The newer side's hashes take precedence on conflicts.
+    const contentUnion = syncBackIsNewer
+      ? { ...syncManifestEntry.contentHashes, ...syncBackEntry.contentHashes }
+      : { ...syncBackEntry.contentHashes, ...syncManifestEntry.contentHashes };
+    if (Object.keys(contentUnion).length > 0) {
+      merged[dir] = { ...merged[dir], contentHashes: contentUnion };
     }
   }
   return merged;
