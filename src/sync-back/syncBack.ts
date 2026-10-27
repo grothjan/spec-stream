@@ -138,6 +138,18 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
     throw err;
   }
 
+  // ─── Heal alias dirs from earlier runs ────────────────────────────────────
+  // Older versions left the local dir under the client-generated id after a
+  // create that the board re-ided (scenario/milestone creates ignore the client
+  // id).  sync-back-ids records those dirs as `<local-uuid> → <board-id>`; if
+  // such a dir still exists on disk, reconcile it to the board id now — rename
+  // the dir (or drop it when the canonical board-id dir was already rendered
+  // by sync) and rewrite the primary json's id.  Without this, the stale dir
+  // produces ops that reference an id the board never had (404/500).
+  if (!dryRun) {
+    healAliasDirs(syncDirAbs, { log, debug });
+  }
+
   // ─── Compute manifest diff ────────────────────────────────────────────────
   const diffs = computeManifestDiff({ syncRootAbs: syncDirAbs });
 
@@ -183,6 +195,42 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
 
   const execResult = await executeOperations(client, operations, { dryRun, log });
 
+  // ─── Reconcile board-assigned ids with local dirs ─────────────────────────
+  // Some create endpoints ignore client-supplied ids and assign their own
+  // (verified: POST /chapters/{id}/scenarios returns a different UUID than the
+  // one in scenario.json).  Leaving the local dir under the client-generated id
+  // makes the next sync pull render a second `<board-uuid>` dir for the same
+  // entity — the entity then exists twice in the model, and the manifest entry
+  // for the alias dir (id = client uuid) later produces a DELETE for an id
+  // that never existed on the board.  Rename the local dir to the
+  // board-assigned id — or drop it when a live sync already rendered the
+  // canonical dir — and rewrite the primary json's id field so local and
+  // board state converge on one id.
+  const dirRenames = new Map<string, string>();
+  if (!dryRun) {
+    for (const diff of diffs) {
+      if (diff.status !== "create") continue;
+      // Chapters contain child entity dirs keyed by their own ids; html
+      // snippets are flat files — neither is a simple leaf-dir rename.
+      if (diff.kind === "chapter" || diff.kind === "html-snippet") continue;
+      // Leave failed entities untouched so the next run can retry them.
+      if (execResult.failedEntityDirs.has(diff.entityDir)) continue;
+      const newId = execResult.newIds.get(diff.entityDir);
+      if (!newId) continue;
+      const base = diff.entityDir.slice(diff.entityDir.lastIndexOf("/") + 1);
+      if (base === newId) continue;
+      try {
+        const newDir = reconcileAliasDir(syncDirAbs, diff.entityDir, newId, diff.kind);
+        if (newDir === null) continue;
+        dirRenames.set(diff.entityDir, newDir);
+        debug(`Reconciled ${diff.entityDir} → ${newDir} (board-assigned id)`);
+      } catch (err) {
+        log(`Warning: could not reconcile ${diff.entityDir} to board id ${newId}: ${(err as Error).message}`);
+      }
+    }
+    if (dirRenames.size > 0) updateUuidIndex(syncDirAbs, dirRenames);
+  }
+
   // ─── Persist state to sync-back-ids.json ─────────────────────────────────
   // Write new ids from creates AND updated content hashes for updates/renames.
   // This allows the next sync-back run to skip entities whose content hasn't
@@ -210,10 +258,14 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
       const id = diff.id ?? execResult.newIds.get(diff.entityDir);
       if (!id) continue; // create failed — no id returned, skip
 
+      // If the create was reconciled to a board-assigned id, the entity now lives
+      // under the renamed dir — record the entry there.
+      const finalDir = dirRenames.get(diff.entityDir) ?? diff.entityDir;
+
       // Compute current disk hash and fields snapshot for next-run change detection.
-      const hash = computeDiskHash(syncDirAbs, diff.entityDir, diff.kind);
-      const fields = readEntityFields(syncDirAbs, diff.entityDir, diff.kind);
-      const contentHashes = readEntityContentHashes(syncDirAbs, diff.entityDir);
+      const hash = computeDiskHash(syncDirAbs, finalDir, diff.kind);
+      const fields = readEntityFields(syncDirAbs, finalDir, diff.kind);
+      const contentHashes = readEntityContentHashes(syncDirAbs, finalDir);
 
       const entry: ManifestEntry = {
         id,
@@ -223,7 +275,7 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
         // sync-manifest entry wins again) or is still stale (hash unchanged → this
         // entry wins). `null` marks that no hashed sync-manifest entry existed —
         // e.g. fresh creates or manifests written before the hash feature.
-        baseHash: syncManifest.entities[diff.entityDir]?.hash ?? null,
+        baseHash: syncManifest.entities[finalDir]?.hash ?? null,
         ...(Object.keys(fields).length > 0 && { fields }),
         ...(Object.keys(contentHashes).length > 0 && { contentHashes }),
       };
@@ -231,7 +283,7 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
       // For scenarios, persist the current expectations and interactions arrays so the
       // next sync-back run can diff against them.
       if (diff.kind === "scenario") {
-        const scenarioJson = readScenarioJson(syncDirAbs, diff.entityDir);
+        const scenarioJson = readScenarioJson(syncDirAbs, finalDir);
         if (scenarioJson !== null) {
           const extra: ManifestEntry["extra"] = {};
           if (scenarioJson.expectations !== null) extra.expectations = scenarioJson.expectations;
@@ -240,65 +292,53 @@ export async function runSyncBack(opts: SyncBackOptions = {}): Promise<SyncBackR
         }
       }
 
-      existing.entities[diff.entityDir] = entry;
+      existing.entities[finalDir] = entry;
       wrote++;
+
+      if (finalDir !== diff.entityDir) {
+        // Alias stub: records that the pre-rename dir was pushed as `id`.
+        // A stale sync-manifest entry for the old dir can outlive the rename
+        // (the sync daemon may still hold the client-id entity in memory and
+        // re-emit it into sync-manifest.json); this stub is what lets
+        // computeManifestDiff recognise that entry as an alias instead of
+        // emitting a DELETE for a never-on-board id.
+        existing.entities[diff.entityDir] = { id };
+      }
     }
 
-    // ── GC: remove stale sync-back-ids entries superseded by sync-manifest ──────
-    // When the sync process renames an entity directory on disk (because the board
-    // sent back an element-renamed / chapter-renamed / etc. event after sync-back
-    // pushed the rename), it updates sync-manifest.json to the new dir but leaves
-    // the old entry in sync-back-ids.json.  On the next run, both dirs appear in the
-    // merged manifest while only the new dir exists on disk — causing a spurious
-    // delete.  computeManifestDiff already guards against this, but we also GC here
-    // so the stale entry doesn't accumulate forever.
+    // ── GC: remove stale sync-back-ids entries ──────────────────────────────────
+    // An entry is stale only when BOTH:
+    //   - its entityDir is gone from disk (the entity was deleted externally,
+    //     or sync renamed/absorbed the dir), AND
+    //   - sync-manifest records nothing for that dir.
     //
-    // We also handle the case where an entity was deleted externally (on the board or
-    // via the local model being updated by sync): sync removes the entry from
-    // sync-manifest.json and deletes the local file.  sync-back-ids.json still holds
-    // the old entry, causing a spurious delete operation on every subsequent run (the
-    // API returns 404/500 since the entity is already gone).  If an id is absent from
-    // sync-manifest AND its directory no longer exists on disk, the entity is gone —
-    // clean up the stale sync-back-ids entry so we stop retrying.
+    // While the dir still exists, the entry is what prevents the diff from
+    // treating it as a fresh create (dropping it would re-push a duplicate —
+    // e.g. a local alias dir whose entity the board re-ided on create).  And
+    // while sync-manifest still records an entry for the same dir, this ids
+    // entry may be the only record that the manifest's id is a superseded
+    // client-side alias — removing it would unguard a bogus DELETE for an id
+    // the board never had.
     //
-    // Build a map from id → canonical dir according to sync-manifest.
-    const manifestIdToDir = new Map<string, string>();
-    for (const [dir, entry] of Object.entries(syncManifest.entities)) {
-      manifestIdToDir.set(entry.id, dir);
-    }
+    // HTML snippets have a flat layout — html-snippets/<slug>.json (+ .html) —
+    // so their entityDir is a virtual path with no backing directory. Check for
+    // the primary .json file (which is also what identifies the entity to
+    // walkDiskEntities) instead of the directory.
     let gcCount = 0;
-    for (const [dir, entry] of Object.entries(existing.entities)) {
-      const canonicalDir = manifestIdToDir.get(entry.id);
-      if (canonicalDir !== undefined && canonicalDir !== dir) {
-        // sync-manifest tracks this id under a different (newer) directory —
-        // this sync-back-ids entry is stale; remove it.
+    for (const dir of Object.keys(existing.entities)) {
+      const exists =
+        kindFromEntityDir(dir) === "html-snippet"
+          ? existsSync(join(syncDirAbs, `${dir}.json`))
+          : existsSync(join(syncDirAbs, dir));
+      if (!exists && syncManifest.entities[dir] === undefined) {
         delete existing.entities[dir];
         gcCount++;
-        continue;
-      }
-      if (canonicalDir === undefined) {
-        // This id is not in sync-manifest at all. Check whether the entity
-        // still exists on disk. If it doesn't, the entity was deleted externally
-        // (board-side deletion processed by sync) — the sync-back-ids entry is stale.
-        //
-        // HTML snippets have a flat layout — html-snippets/<slug>.json (+ .html) —
-        // so their entityDir is a virtual path with no backing directory. Check for
-        // the primary .json file (which is also what identifies the entity to
-        // walkDiskEntities) instead of the directory.
-        const exists =
-          kindFromEntityDir(dir) === "html-snippet"
-            ? existsSync(join(syncDirAbs, `${dir}.json`))
-            : existsSync(join(syncDirAbs, dir));
-        if (!exists) {
-          delete existing.entities[dir];
-          gcCount++;
-          debug(`GC: removed stale sync-back-ids entry for externally deleted entity @ ${dir}`);
-        }
+        debug(`GC: removed stale sync-back-ids entry @ ${dir}`);
       }
     }
     if (gcCount > 0) {
       wrote += gcCount; // ensure we save
-      debug(`GC: removed ${gcCount} stale sync-back-ids entr${gcCount === 1 ? "y" : "ies"} superseded by sync-manifest`);
+      debug(`GC: removed ${gcCount} stale sync-back-ids entr${gcCount === 1 ? "y" : "ies"}`);
     }
 
     if (wrote > 0) {
@@ -500,8 +540,117 @@ async function runPreSyncChecks(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+
+/** Primary json filename per leaf entity kind (uuid-keyed dirs). */
+const PRIMARY_JSON_FILE: Record<string, string> = {
+  slice: "slice.json",
+  lane: "lane.json",
+  element: "element.json",
+  milestone: "milestone.json",
+  scenario: "scenario.json",
+};
+
+/**
+ * Rename an entity dir whose local (client-generated) uuid differs from the
+ * board-assigned id to the canonical `<parent>/<board-id>` dir, and rewrite
+ * the `id` field in its primary json.  When the canonical dir already exists
+ * (a live sync already rendered the board entity) the local alias dir is a
+ * redundant copy and is removed instead — the pushed content is on the board.
+ *
+ * Returns the new entityDir, or null when the local dir does not exist.
+ */
+function reconcileAliasDir(
+  syncRootAbs: string,
+  entityDir: string,
+  boardId: string,
+  kind: string,
+): string | null {
+  const oldAbs = join(syncRootAbs, entityDir);
+  if (!existsSync(oldAbs)) return null;
+  const newDir = `${entityDir.slice(0, entityDir.lastIndexOf("/"))}/${boardId}`;
+  const newAbs = join(syncRootAbs, newDir);
+  if (existsSync(newAbs)) {
+    rmSync(oldAbs, { recursive: true, force: true });
+    return newDir;
+  }
+  renameSync(oldAbs, newAbs);
+  const primaryFile = PRIMARY_JSON_FILE[kind];
+  if (primaryFile) {
+    const jsonAbs = join(newAbs, primaryFile);
+    const parsed = JSON.parse(readFileSync(jsonAbs, "utf8")) as Record<string, unknown>;
+    parsed.id = boardId;
+    writeFileSync(jsonAbs, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+  }
+  return newDir;
+}
+
+/**
+ * Reconcile on-disk alias dirs recorded in sync-back-ids.json (dir basename is
+ * the client-generated uuid, entry id is the board-assigned one).  Each healed
+ * dir gets its ids entry re-keyed to the canonical dir and keeps a stub under
+ * the old dir so stale sync-manifest records are still recognised as aliases.
+ */
+function healAliasDirs(
+  syncRootAbs: string,
+  ctx: { log: (msg: string) => void; debug: (msg: string) => void },
+): void {
+  const idsPath = syncBackIdsPath(syncRootAbs);
+  const ids = loadManifest(idsPath);
+  const renames = new Map<string, string>();
+
+  for (const [dir, entry] of Object.entries(ids.entities)) {
+    const kind = kindFromEntityDir(dir);
+    if (!kind || kind === "chapter" || kind === "html-snippet") continue;
+    if (!entry.id) continue;
+    const base = dir.slice(dir.lastIndexOf("/") + 1);
+    if (entry.id === base) continue; // already canonical
+    try {
+      const newDir = reconcileAliasDir(syncRootAbs, dir, entry.id, kind);
+      if (newDir === null) continue;
+      delete ids.entities[dir];
+      ids.entities[newDir] = {
+        ...entry,
+        hash: computeDiskHash(syncRootAbs, newDir, kind),
+      };
+      ids.entities[dir] = { id: entry.id };
+      renames.set(dir, newDir);
+      ctx.debug(`Reconciled alias dir ${dir} → ${newDir} (board-assigned id)`);
+    } catch (err) {
+      ctx.log(`Warning: could not reconcile alias dir ${dir}: ${(err as Error).message}`);
+    }
+  }
+
+  if (renames.size === 0) return;
+  ids.updatedAt = new Date().toISOString();
+  try {
+    saveManifest(idsPath, ids);
+  } catch (err) {
+    ctx.log(`Warning: could not write sync-back-ids.json: ${(err as Error).message}`);
+  }
+  updateUuidIndex(syncRootAbs, renames);
+}
+
+/**
+ * Update uuid-index.json after entity dirs were renamed to board-assigned ids:
+ * drop the stale uuid→dir entry and record the new id → dir mapping.
+ * Best-effort — the sync process regenerates the index on every write anyway.
+ */
+function updateUuidIndex(syncRootAbs: string, renames: Map<string, string>): void {
+  const indexPath = join(syncRootAbs, "uuid-index.json");
+  try {
+    if (!existsSync(indexPath)) return;
+    const index = JSON.parse(readFileSync(indexPath, "utf8")) as Record<string, string>;
+    for (const [oldDir, newDir] of renames) {
+      const oldId = oldDir.slice(oldDir.lastIndexOf("/") + 1);
+      const newId = newDir.slice(newDir.lastIndexOf("/") + 1);
+      if (index[oldId] === oldDir) delete index[oldId];
+      index[newId] = newDir;
+    }
+    writeFileSync(indexPath, JSON.stringify(index, null, 2) + "\n", "utf8");
+  } catch { /* regenerate-on-next-sync is the fallback */ }
+}
 
 /**
  * Read expectations and interactions from a scenario.json on disk.

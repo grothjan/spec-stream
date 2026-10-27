@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runSyncBack } from "./syncBack.js";
+import { computeDiskHash } from "./manifestDiff.js";
 import {
   buildManifestFromTree,
   loadManifest,
@@ -359,5 +360,165 @@ describe("runSyncBack — html-snippet GC regression", () => {
     const ids = loadManifest(syncBackIdsPath(modelDir(projectDir)));
     expect(ids.entities["html-snippets/live-snippet"]).toBeDefined();
     expect(ids.entities["html-snippets/dead-snippet"]).toBeUndefined();
+  });
+});
+
+describe("runSyncBack — board-assigned scenario ids", () => {
+  let projectDir: string;
+  let savedApiKey: string | undefined;
+
+  const CHAPTER_ID = "11111111-1111-4111-8111-111111111111";
+  const CHAPTER_DIR = `chapters/${CHAPTER_ID}`;
+
+  beforeEach(() => {
+    projectDir = makeProject();
+    savedApiKey = process.env[API_KEY_ENV];
+    process.env[API_KEY_ENV] = "pb_test-key";
+  });
+
+  afterEach(() => {
+    if (savedApiKey === undefined) delete process.env[API_KEY_ENV];
+    else process.env[API_KEY_ENV] = savedApiKey;
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  function writeScenario(projectDir: string, localId: string, name = "My Scenario"): string {
+    const dir = join(modelDir(projectDir), CHAPTER_DIR, "scenarios", localId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "scenario.json"),
+      JSON.stringify({ id: localId, chapterId: CHAPTER_ID, name }, null, 2),
+      "utf8",
+    );
+    return `${CHAPTER_DIR}/scenarios/${localId}`;
+  }
+
+  function writeChapter(projectDir: string): void {
+    const dir = join(modelDir(projectDir), CHAPTER_DIR);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "chapter.json"),
+      JSON.stringify({ id: CHAPTER_ID, name: "Chapter", context: "App" }, null, 2),
+      "utf8",
+    );
+  }
+
+  it("renames the local dir to the board-assigned id after a scenario create", async () => {
+    // The board ignores client-supplied ids on scenario create and assigns its
+    // own. Without reconciliation the local dir keeps the client UUID while the
+    // next sync pull renders a second `scenarios/<board-uuid>` dir — the same
+    // scenario twice on disk.
+    const LOCAL_ID = "22222222-2222-4222-8222-222222222222";
+    const BOARD_ID = "33333333-3333-4333-8333-333333333333";
+    writeChapter(projectDir);
+    const localDir = writeScenario(projectDir, LOCAL_ID);
+
+    // The chapter is already synced — only the scenario is a create.
+    writeSyncManifest(projectDir, {
+      [CHAPTER_DIR]: {
+        id: CHAPTER_ID,
+        hash: computeDiskHash(modelDir(projectDir), CHAPTER_DIR, "chapter"),
+      },
+    });
+
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const fetchImpl = makeFetch(calls, ({ method, url }) =>
+      method === "POST" && url.endsWith(`/chapters/${CHAPTER_ID}/scenarios`)
+        ? new Response(JSON.stringify({ id: BOARD_ID }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+    );
+
+    const first = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl,
+      omitChecks: true,
+    });
+    expect(first.failed).toBe(0);
+    expect(first.executed).toBe(1);
+
+    // The alias dir is gone; the canonical board-id dir exists with the board id
+    // inside scenario.json.
+    const boardDir = `${CHAPTER_DIR}/scenarios/${BOARD_ID}`;
+    expect(existsSync(join(modelDir(projectDir), localDir))).toBe(false);
+    const scenarioJson = JSON.parse(
+      readFileSync(join(modelDir(projectDir), boardDir, "scenario.json"), "utf8"),
+    ) as { id: string };
+    expect(scenarioJson.id).toBe(BOARD_ID);
+
+    // sync-back-ids tracks the entity under its canonical dir. (The alias stub
+    // under the old dir is GC'd in the same run — nothing in sync-manifest
+    // references the old dir, so there is no stale entry left to guard.)
+    const ids = loadManifest(syncBackIdsPath(modelDir(projectDir)));
+    expect(ids.entities[boardDir]?.id).toBe(BOARD_ID);
+    expect(ids.entities[localDir]).toBeUndefined();
+
+    // Second run: the renamed dir must be recognised as already-synced — no ops.
+    calls.length = 0;
+    const second = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl,
+      omitChecks: true,
+    });
+    expect(second.operationCount).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("heals a pre-existing alias dir left by an older sync-back (update path)", async () => {
+    // Legacy state produced before the reconcile existed:
+    //   - alias dir `scenarios/LOCAL_ID` on disk (scenario.json id = LOCAL_ID)
+    //   - sync-back-ids: `scenarios/LOCAL_ID → BOARD_ID` (pushed earlier)
+    //   - sync-manifest: `scenarios/LOCAL_ID → LOCAL_ID` (a sync resume rendered
+    //     the alias file into the manifest)
+    // Without healing, the merged diff treats the alias as an update for
+    // LOCAL_ID → PATCH /scenarios/LOCAL_ID → 404 on a real board.
+    const LOCAL_ID = "22222222-2222-4222-8222-222222222222";
+    const BOARD_ID = "33333333-3333-4333-8333-333333333333";
+    const localDir = `${CHAPTER_DIR}/scenarios/${LOCAL_ID}`;
+    const boardDir = `${CHAPTER_DIR}/scenarios/${BOARD_ID}`;
+
+    writeChapter(projectDir);
+    writeScenario(projectDir, LOCAL_ID);
+    writeSyncManifest(projectDir, {
+      [CHAPTER_DIR]: { id: CHAPTER_ID },
+      [localDir]:    { id: LOCAL_ID },
+    });
+    saveManifest(syncBackIdsPath(modelDir(projectDir)), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      entities: { [localDir]: { id: BOARD_ID } },
+    });
+
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const result = await runSyncBack({
+      cwd: projectDir,
+      configPath: configPath(projectDir),
+      fetchImpl: makeFetch(calls),
+      omitChecks: true,
+    });
+    expect(result.failed).toBe(0);
+
+    // The alias dir must be reconciled to the board id — no op may reference
+    // the client-side uuid.
+    expect(existsSync(join(modelDir(projectDir), localDir))).toBe(false);
+    const scenarioJson = JSON.parse(
+      readFileSync(join(modelDir(projectDir), boardDir, "scenario.json"), "utf8"),
+    ) as { id: string };
+    expect(scenarioJson.id).toBe(BOARD_ID);
+    expect(calls.every((c) => !c.url.includes(LOCAL_ID))).toBe(true);
+
+    // The ids entry moved to the canonical dir; the stub under the old dir is
+    // kept because sync-manifest still records an entry for it (it's the guard
+    // that prevents a bogus DELETE for the client uuid).
+    const ids = loadManifest(syncBackIdsPath(modelDir(projectDir)));
+    expect(ids.entities[boardDir]?.id).toBe(BOARD_ID);
+    expect(ids.entities[localDir]?.id).toBe(BOARD_ID);
   });
 });
