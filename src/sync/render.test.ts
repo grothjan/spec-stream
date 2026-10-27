@@ -318,7 +318,7 @@ import { emptyDirtySet } from "./reducer.js";
 
 describe("renderPartial", () => {
   it("always includes workspace.json and uuid-index.json", () => {
-    const t = renderPartial(model(), emptyDirtySet());
+    const { tree: t } = renderPartial(model(), emptyDirtySet());
     expect(t.has("workspace.json")).toBe(true);
     expect(t.has("uuid-index.json")).toBe(true);
   });
@@ -327,7 +327,7 @@ describe("renderPartial", () => {
     // Only lane-resized is dirty — element files should not appear
     const dirty = emptyDirtySet();
     dirty.lanes.add("l1");
-    const t = renderPartial(model(), dirty);
+    const { tree: t } = renderPartial(model(), dirty);
     expect(t.has(`${ELEMENT_DIR}/element.json`)).toBe(false);
     expect(t.has(`${ELEMENT_DIR}/description.md`)).toBe(false);
     expect(t.has(`${SLICE_DIR}/slice.json`)).toBe(false);
@@ -336,7 +336,7 @@ describe("renderPartial", () => {
   it("includes only the dirty lane's files", () => {
     const dirty = emptyDirtySet();
     dirty.lanes.add("l1");
-    const t = renderPartial(model(), dirty);
+    const { tree: t } = renderPartial(model(), dirty);
     expect(t.has(`${LANE_DIR}/lane.json`)).toBe(true);
   });
 
@@ -346,24 +346,24 @@ describe("renderPartial", () => {
     applyEvent(s, ev("element-added", { chapterId: "c1", data: { newValue: { element: { id: "el2", type: "event", name: "Order Placed", context: "Ordering", laneId: "l1", sliceId: "s1", index: 1 } } } }));
     const dirty = emptyDirtySet();
     dirty.elements.add("el1"); // only el1 is dirty
-    const t = renderPartial(s, dirty);
+    const { tree: t } = renderPartial(s, dirty);
     expect(t.has(`${ELEMENT_DIR}/element.json`)).toBe(true);
     expect(t.has(`${CHAPTER_DIR}/elements/el2/element.json`)).toBe(false);
   });
 
-  it("regenerates chapter index.md when a slice is dirty (child change)", () => {
+  it("regenerates chapter index.md and chapter.json when a slice is dirty (child change)", () => {
     const dirty = emptyDirtySet();
     dirty.slices.add("s1");
-    const t = renderPartial(model(), dirty);
+    const { tree: t } = renderPartial(model(), dirty);
     expect(t.has(`${CHAPTER_DIR}/index.md`)).toBe(true);
-    // But chapter.json itself is NOT rewritten (chapter not directly dirty)
-    expect(t.has(`${CHAPTER_DIR}/chapter.json`)).toBe(false);
+    // chapter.json is also re-emitted alongside index.md to keep the dir consistent
+    expect(t.has(`${CHAPTER_DIR}/chapter.json`)).toBe(true);
   });
 
   it("renders full chapter subtree when chapter itself is dirty", () => {
     const dirty = emptyDirtySet();
     dirty.chapters.add("c1");
-    const t = renderPartial(model(), dirty);
+    const { tree: t } = renderPartial(model(), dirty);
     expect(t.has(`${CHAPTER_DIR}/chapter.json`)).toBe(true);
     expect(t.has(`${CHAPTER_DIR}/index.md`)).toBe(true);
     expect(t.has(`${SLICE_DIR}/slice.json`)).toBe(true);
@@ -375,11 +375,31 @@ describe("renderPartial", () => {
     const s = model();
     const dirty = emptyDirtySet();
     dirty.elements.add("el1");
-    const partial = renderPartial(s, dirty);
+    const { tree: partial } = renderPartial(s, dirty);
     const full = render(s);
     // The element files should be identical between partial and full render
     for (const path of [`${ELEMENT_DIR}/element.json`, `${ELEMENT_DIR}/description.md`, `${ELEMENT_DIR}/details.md`]) {
       expect(partial.get(path)).toBe(full.get(path));
     }
+  });
+
+  it("returns dirsToDelete for a deleted chapter", () => {
+    const s = model();
+    // Delete the chapter from state
+    applyEvent(s, ev("chapter-removed", { chapterId: "c1", data: { id: "c1" } }));
+    const dirty = emptyDirtySet();
+    dirty.chapters.add("c1");
+    const { dirsToDelete } = renderPartial(s, dirty);
+    expect(dirsToDelete.has(`chapters/c1`)).toBe(true);
+  });
+
+  it("returns dirsToDelete for a deleted milestone", () => {
+    const s = model();
+    applyEvent(s, ev("milestone-added", { data: { newValue: { milestone: { id: "m1", name: "MVP", description: "", slices: [] } } } }));
+    applyEvent(s, ev("milestone-deleted", { data: { milestoneId: "m1" } }));
+    const dirty = emptyDirtySet();
+    dirty.milestones.add("m1");
+    const { dirsToDelete } = renderPartial(s, dirty);
+    expect(dirsToDelete.has("milestones/m1")).toBe(true);
   });
 });

@@ -80,6 +80,18 @@ export function render(state: ModelState): DesiredTree {
   return tree;
 }
 
+/** Return value of {@link renderPartial}. */
+export interface PartialRenderResult {
+  /** The partial desired file tree — only files for dirty entities. */
+  tree: DesiredTree;
+  /**
+   * Relative directory paths (or file paths for flat entities like html-snippets)
+   * that should be deleted from disk. Only populated for entities that were in the
+   * dirty set but are no longer present in state (i.e. they were deleted on the board).
+   */
+  dirsToDelete: Set<string>;
+}
+
 /**
  * Partial render: only emit files for entities listed in `dirty`, plus the small
  * always-rewrite files (workspace.json, uuid-index.json, and index.md for any chapter
@@ -95,9 +107,14 @@ export function render(state: ModelState): DesiredTree {
  * A chapter's `index.md` is regenerated whenever the chapter itself or any of its
  * children (slices, lanes, elements, scenarios) is dirty, because `index.md` is a
  * derived summary that depends on all of them.
+ *
+ * `dirsToDelete` in the result contains relative paths for entities that were removed
+ * on the board (present in dirty but absent from state). The caller should pass these
+ * to `writeTree` so their directories are cleaned up even in partial mode.
  */
-export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
+export function renderPartial(state: ModelState, dirty: DirtySet): PartialRenderResult {
   const tree: DesiredTree = new Map();
+  const dirsToDelete = new Set<string>();
 
   // Always rewrite workspace.json and uuid-index.json — tiny, and must stay consistent.
   tree.set("workspace.json", json({ id: state.workspaceId, name: state.workspaceName }));
@@ -126,21 +143,44 @@ export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
   // Render dirty chapters fully (chapter.json + index.md + all children).
   for (const chapterId of dirty.chapters) {
     const chapter = state.chapters.get(chapterId);
-    if (chapter) renderChapter(tree, state, chapter);
-    // Deleted chapter: nothing to render; writeTree will prune its directory.
+    if (chapter) {
+      renderChapter(tree, state, chapter);
+    } else {
+      // Chapter was deleted on the board.
+      dirsToDelete.add(`chapters/${chapterId}`);
+    }
   }
 
-  // Regenerate index.md for chapters with dirty children that weren't fully re-rendered above.
+  // Regenerate index.md (+ chapter.json) for chapters with dirty children that weren't
+  // fully re-rendered above. We emit chapter.json too so writeTree partial mode doesn't
+  // see the chapter dir as "new" and leave it in an inconsistent state.
   for (const chapterId of indexDirtyChapters) {
     if (dirty.chapters.has(chapterId)) continue; // already fully rendered
     const chapter = state.chapters.get(chapterId);
-    if (chapter) tree.set(`${chapterDir(chapter)}/index.md`, renderChapterIndex(state, chapter));
+    if (!chapter) continue;
+    const dir = `chapters/${chapter.id}`;
+    tree.set(`${dir}/chapter.json`, json({
+      id: chapter.id,
+      name: chapter.name,
+      context: chapter.context,
+      index: chapter.index,
+      mode: chapter.mode,
+      sliceOrder: chapter.sliceOrder,
+      laneOrder: chapter.laneOrder,
+    }));
+    tree.set(`${dir}/index.md`, renderChapterIndex(state, chapter));
   }
 
   // Render dirty slices.
   for (const sliceId of dirty.slices) {
     const slice = state.slices.get(sliceId);
-    if (!slice) continue;
+    if (!slice) {
+      // Slice deleted — we don't know the chapter anymore, but the uuid-index will no
+      // longer reference it; a full seed on restart will prune the orphaned directory.
+      // We can reconstruct the path if we still have it in the uuid-index on disk, but
+      // that's complex — defer to next seed. Mark nothing here.
+      continue;
+    }
     const chapter = state.chapters.get(slice.chapterId);
     if (chapter) renderSlice(tree, state, chapter, slice);
   }
@@ -148,7 +188,7 @@ export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
   // Render dirty lanes.
   for (const laneId of dirty.lanes) {
     const lane = state.lanes.get(laneId);
-    if (!lane) continue;
+    if (!lane) continue; // deleted — defer to next seed
     const chapter = state.chapters.get(lane.chapterId);
     if (chapter) renderLane(tree, chapter, lane);
   }
@@ -156,7 +196,7 @@ export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
   // Render dirty elements.
   for (const elementId of dirty.elements) {
     const el = state.elements.get(elementId);
-    if (!el) continue;
+    if (!el) continue; // deleted — defer to next seed
     const chapter = state.chapters.get(el.chapterId);
     if (chapter) renderElement(tree, chapter, el);
   }
@@ -164,14 +204,17 @@ export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
   // Render dirty milestones.
   for (const milestoneId of dirty.milestones) {
     const m = state.milestones.get(milestoneId);
-    if (m) renderMilestone(tree, m);
-    // Deleted milestone: writeTree will prune its directory.
+    if (m) {
+      renderMilestone(tree, m);
+    } else {
+      dirsToDelete.add(`milestones/${milestoneId}`);
+    }
   }
 
   // Render dirty scenarios.
   for (const scenarioId of dirty.scenarios) {
     const sc = state.scenarios.get(scenarioId);
-    if (!sc) continue;
+    if (!sc) continue; // deleted — defer to next seed
     const chapter = state.chapters.get(sc.chapterId);
     if (chapter) renderScenario(tree, chapter, sc);
   }
@@ -179,8 +222,14 @@ export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
   // Render dirty HTML snippets.
   for (const slug of dirty.htmlSnippets) {
     const snippet = state.htmlSnippets.get(slug);
-    if (snippet) renderHtmlSnippet(tree, snippet);
-    // Deleted snippet: writeTree will remove its files.
+    if (snippet) {
+      renderHtmlSnippet(tree, snippet);
+    } else {
+      // html-snippets are flat files: html-snippets/<slug>.html + .json
+      const safeSlug = sanitizeSegment(slug, "snippet");
+      dirsToDelete.add(`html-snippets/${safeSlug}.html`);
+      dirsToDelete.add(`html-snippets/${safeSlug}.json`);
+    }
   }
 
   // Render dirty shared lane details.
@@ -193,7 +242,7 @@ export function renderPartial(state: ModelState, dirty: DirtySet): DesiredTree {
     tree.set(`lane-details/${t}/${n}/details.md`, markdown(entry.body));
   }
 
-  return tree;
+  return { tree, dirsToDelete };
 }
 
 // ─────────────────────── path builders ───────────────────────

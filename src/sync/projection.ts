@@ -304,8 +304,16 @@ export class Projection {
     this.pendingDirty = emptyDirtySet();
     this.appliedSinceWrite = 0;
 
-    const tree = full ? render(this.state) : renderPartial(this.state, dirty);
-    const result = writeTree(this.dir, tree, { partial: !full });
+    let tree: import("./render.js").DesiredTree;
+    let dirsToDelete: Set<string> | undefined;
+    if (full) {
+      tree = render(this.state);
+    } else {
+      const partial = renderPartial(this.state, dirty);
+      tree = partial.tree;
+      dirsToDelete = partial.dirsToDelete;
+    }
+    const result = writeTree(this.dir, tree, { partial: !full, dirsToDelete });
 
     // Check if we need to update the sync state (cursor)
     const needsStateUpdate = this.needsStateUpdate();

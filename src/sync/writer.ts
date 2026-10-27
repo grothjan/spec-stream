@@ -65,12 +65,17 @@ export interface WriteResult {
 /**
  * Make `rootDir` match `tree`. In full mode (default), the directory is treated as
  * exclusively owned: any file not in the desired tree is deleted and empty directories
- * are pruned. In partial mode (`partial: true`), only files whose parent directories are
- * represented in the tree are candidates for deletion — files in unrelated directories
- * are left untouched. This allows the projection to write only dirty entities without
- * clobbering files that belong to clean (locally-modified) entities.
+ * are pruned. In partial mode (`partial: true`), only creates/updates files — no
+ * deletions are performed, EXCEPT for paths explicitly listed in `dirsToDelete` (used
+ * for entities that were deleted on the board). This allows the projection to write only
+ * dirty entities without clobbering locally-added files (e.g. a play-function.ts added
+ * by an agent that hasn't been sync-backed yet).
  */
-export function writeTree(rootDir: string, tree: DesiredTree, opts: { partial?: boolean } = {}): WriteResult {
+export function writeTree(
+  rootDir: string,
+  tree: DesiredTree,
+  opts: { partial?: boolean; dirsToDelete?: Set<string> } = {},
+): WriteResult {
   const root = resolve(rootDir);
   mkdirSync(root, { recursive: true });
 
@@ -117,28 +122,32 @@ export function writeTree(rootDir: string, tree: DesiredTree, opts: { partial?: 
     existingFiles.delete(abs);
   }
 
-  // In partial mode, only delete files whose parent directory is represented in the
-  // desired tree. Files in directories not covered by this partial render belong to
-  // clean (possibly locally-modified) entities and must be left untouched.
-  const deletionCandidates: Set<string> = (() => {
-    if (!opts.partial) return existingFiles;
-    // Collect the set of absolute directories that appear in the desired tree.
-    const coveredDirs = new Set<string>();
-    for (const abs of desired.keys()) {
-      coveredDirs.add(dirname(abs));
-    }
-    const partial = new Set<string>();
-    for (const abs of existingFiles) {
-      if (coveredDirs.has(dirname(abs))) partial.add(abs);
-    }
-    return partial;
-  })();
+  // In partial mode, skip the bulk deletion pass. We only write/update the specific
+  // entity files that changed — we never want to delete files that weren't included in
+  // the partial tree, because those may be locally-added files (e.g. a play-function.ts
+  // added by an agent that hasn't been sync-backed yet).
+  const deletionCandidates: Set<string> = opts.partial ? new Set() : existingFiles;
 
-  // 1. Delete files on disk that are not desired.
+  // 1a. Delete files on disk that are not desired (full mode only).
   for (const abs of deletionCandidates) {
     rmSync(abs, { force: true });
     result.deleted++;
-    result.byType.other++; // deleted files tracked as "other"
+    result.byType.other++;
+  }
+
+  // 1b. Explicit deletes for entities removed on the board (used in partial mode).
+  // dirsToDelete contains relative paths — either a directory (uuid-keyed entities like
+  // chapters, milestones) or individual files (flat entities like html-snippets).
+  if (opts.dirsToDelete) {
+    for (const rel of opts.dirsToDelete) {
+      const abs = resolve(root, rel);
+      if (!isInside(root, abs)) continue;
+      try {
+        rmSync(abs, { recursive: true, force: true });
+        result.deleted++;
+        result.byType.other++;
+      } catch { /* already gone — ignore */ }
+    }
   }
 
   // 2. Create/update desired files (diff-based).
