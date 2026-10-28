@@ -47,13 +47,13 @@ interface ChangelogEventBase {
 ## Event types by category
 
 ### Chapter
-| `type` | Key payload |
-|--------|-------------|
-| `chapter-added` | `newValue: { id, name, mode }` |
-| `chapter-renamed` | `oldValue/newValue: { name }` |
-| `chapter-edited` | `oldValue/newValue: { name, context }` |
-| `chapter-removed` | `oldValue: { chapter }` |
-| `chapters-reordered` | `oldValue/newValue: { chapterIds }` |
+| `type` | Key payload                             |
+|--------|-----------------------------------------|
+| `chapter-added` | `newValue: { id, name, mode, context }` |
+| `chapter-renamed` | `oldValue/newValue: { name }`           |
+| `chapter-edited` | `oldValue/newValue: { name, context }`  |
+| `chapter-removed` | `oldValue: { chapter }`                 |
+| `chapters-reordered` | `oldValue/newValue: { chapterIds }`     |
 
 ### Slice
 | `type` | Key payload |
