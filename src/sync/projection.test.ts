@@ -6,6 +6,7 @@ import { Projection, type Timers } from "./projection.js";
 import type { Logger } from "../logging/logger.js";
 import type { RestClient, ApiChapter, ApiMilestone } from "./restClient.js";
 import type { ChangelogEvent } from "../realtime/events.js";
+import { syncManifestPath } from "../sync-back/manifest.js";
 
 function noopLogger(): Logger {
   const fn = () => {};
@@ -338,6 +339,108 @@ describe("Projection partial (dirty-tracking) writes", () => {
 
     // c1's local edit untouched
     expect(readFileSync(descPath, "utf8")).toBe("LOCAL EDIT C1");
+  });
+});
+
+describe("Projection unseeded model (failed seed)", () => {
+  /**
+   * Reproduces bug 013: when `seed()` fails (e.g. GET /chapters → 429), the daemon
+   * keeps running with the in-memory `emptyModel`. The first live event's write pass
+   * then rebuilt `sync-manifest.json` (`entities: {}`), `uuid-index.json` (`{}`) and
+   * advanced `sync-state.json`'s cursor — a confidently-empty model clobbering the
+   * manifests and arming a sync-back create-storm. An unseeded model must never
+   * touch the disk.
+   */
+  function failingClient(): RestClient {
+    const fail = () => Promise.reject(new Error("GET /chapters: rate limited (429)."));
+    return {
+      listChapters: fail,
+      getChapter: fail,
+      listMilestones: fail,
+      listScenarios: fail,
+      listSnippets: fail,
+    } as unknown as RestClient;
+  }
+
+  function seededMirror() {
+    // Nested model dir so the manifest lands at <dir>/sync-manifest.json
+    // (one level above the model dir, as in production `.spec-stream/` layout).
+    const modelDir = join(dir, "model");
+    mkdirSync(modelDir, { recursive: true });
+    return modelDir;
+  }
+
+  it("does not rewrite manifest, uuid-index, or cursor when the seed never succeeded", async () => {
+    const modelDir = seededMirror();
+    // Prior daemon seeded a healthy mirror + manifest.
+    const good = new Projection({
+      dir: modelDir, workspaceId: "ws", workspaceName: "Demo",
+      client: mockClient(), logger: noopLogger(),
+      timers: manualTimers(), debounceMs: 10,
+    });
+    await good.seed();
+    const manifestPath = syncManifestPath(modelDir);
+    const uuidPath = join(modelDir, "uuid-index.json");
+    const statePath = join(modelDir, "sync-state.json");
+    const manifestBefore = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const uuidBefore = readFileSync(uuidPath, "utf8");
+    const stateBefore = JSON.parse(readFileSync(statePath, "utf8"));
+    expect(Object.keys(manifestBefore.entities).length).toBeGreaterThan(0);
+    expect(Object.keys(JSON.parse(uuidBefore)).length).toBeGreaterThan(0);
+
+    // Restart with a failing REST seed (rebuild → always fetches): mirrors the
+    // daemon continuing unseeded after `sync.seed_failed`.
+    const timers = manualTimers();
+    const unseeded = new Projection({
+      dir: modelDir, workspaceId: "ws", workspaceName: "Demo",
+      client: failingClient(), logger: noopLogger(),
+      timers, debounceMs: 10,
+    });
+    await expect(unseeded.seed(true)).rejects.toThrow("rate limited");
+    expect(unseeded.isSeeded).toBe(false);
+
+    // A live event arrives — the bug's trigger.
+    unseeded.handle(ev("element-description-changed", {
+      id: "live-1", elementId: "el1", createdAt: "2026-10-04T00:00:00Z",
+      data: { newValue: { description: "changed on board" } },
+    }));
+    timers.tick();
+    unseeded.flushNow();
+
+    // Manifest and uuid-index must still describe the seeded mirror.
+    expect(readFileSync(manifestPath, "utf8")).toBe(JSON.stringify(manifestBefore, null, 2) + "\n");
+    expect(readFileSync(uuidPath, "utf8")).toBe(uuidBefore);
+    // The cursor must not claim progress the model never earned.
+    const stateAfter = JSON.parse(readFileSync(statePath, "utf8"));
+    expect(stateAfter.cursor.lastEventId).not.toBe("live-1");
+    expect(stateAfter.syncedAt).toBe(stateBefore.syncedAt);
+  });
+
+  it("does not persist a cursor pushed via updateCursor/flushCursor while unseeded", async () => {
+    const modelDir = seededMirror();
+    const good = new Projection({
+      dir: modelDir, workspaceId: "ws", workspaceName: "Demo",
+      client: mockClient(), logger: noopLogger(),
+      timers: manualTimers(), debounceMs: 10,
+    });
+    await good.seed();
+    const statePath = join(modelDir, "sync-state.json");
+    const stateBefore = JSON.parse(readFileSync(statePath, "utf8"));
+
+    const unseeded = new Projection({
+      dir: modelDir, workspaceId: "ws", workspaceName: "Demo",
+      client: failingClient(), logger: noopLogger(),
+      timers: manualTimers(), debounceMs: 10,
+    });
+    await expect(unseeded.seed(true)).rejects.toThrow("rate limited");
+
+    // The app's reconnect catch-up path calls updateCursor + flushCursor.
+    unseeded.updateCursor("evt-unearned", "2026-10-04T01:00:00Z");
+    unseeded.flushCursor();
+
+    const stateAfter = JSON.parse(readFileSync(statePath, "utf8"));
+    expect(stateAfter.cursor.lastEventId).not.toBe("evt-unearned");
+    expect(stateAfter.syncedAt).toBe(stateBefore.syncedAt);
   });
 });
 

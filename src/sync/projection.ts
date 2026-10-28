@@ -91,6 +91,7 @@ export class Projection {
   /** Accumulated dirty set across the current debounce window. Reset after each write. */
   private pendingDirty: DirtySet = emptyDirtySet();
   private seeded = false;
+  private unseededWarned = false;
 
   constructor(private readonly opts: ProjectionOptions) {
     this.dir = opts.dir;
@@ -230,8 +231,12 @@ export class Projection {
       }
     }
 
-    const result = this.flushWrite(true);
+    // The model is now authoritative: mark seeded BEFORE the initial write so a
+    // failed fetch can never reach this point (state stays `emptyModel`,
+    // `seeded` stays false, and every write path below refuses to run).
     this.seeded = true;
+    this.unseededWarned = false;
+    const result = this.flushWrite(true);
     this.log.info("sync.seed_done", {
       chapters: this.state.chapters.size,
       slices: this.state.slices.size,
@@ -296,6 +301,30 @@ export class Projection {
    * the entire tree must be consistent from scratch.
    */
   private flushWrite(full = false): WriteResult {
+    // A model that has never been seeded must not write: with `emptyModel` in
+    // memory, `renderPartial`'s unconditional workspace.json/uuid-index.json
+    // would trigger a manifest rebuild that clobbers `sync-manifest.json` to
+    // `entities: {}` and empties `uuid-index.json` — while `sync-state.json`
+    // would advance a cursor the model never earned. A stale mirror is strictly
+    // better than a confidently empty index (see sync-back create-storm).
+    if (!this.seeded) {
+      const detail = { reason: "model never seeded — writes disabled until a seed succeeds" };
+      if (!this.unseededWarned) {
+        this.unseededWarned = true;
+        this.log.warn("sync.write_skipped", detail);
+      } else {
+        this.log.debug("sync.write_skipped", detail);
+      }
+      return {
+        created: 0, updated: 0, deleted: 0, unchanged: 0,
+        byType: {
+          chapters: 0, slices: 0, lanes: 0, elements: 0,
+          milestones: 0, scenarios: 0, htmlSnippets: 0,
+          contentFiles: 0, manifests: 0, stateFiles: 0, other: 0,
+        },
+        changedFiles: [], filesAdded: [], filesModified: [], filesDeleted: [],
+      };
+    }
     const applied = this.appliedSinceWrite;
 
     // Capture and reset the dirty set before rendering so any events that arrive
@@ -402,6 +431,13 @@ export class Projection {
   }
 
   private persistCursor(): void {
+    // Never persist a cursor the model didn't earn — an unseeded projection has
+    // applied events to `emptyModel` only, so writing the cursor would claim
+    // sync progress the on-disk mirror doesn't have.
+    if (!this.seeded) {
+      this.log.debug("sync.cursor_skipped", { reason: "model never seeded" });
+      return;
+    }
     const state: SyncState = {
       workspaceId: this.opts.workspaceId,
       cursor: this.pendingCursor,
@@ -475,6 +511,7 @@ export class Projection {
       elements: this.state.elements.size,
       milestones: this.state.milestones.size,
       pendingWrites: this.appliedSinceWrite,
+      seeded: this.seeded,
     };
   }
 }
