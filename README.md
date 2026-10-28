@@ -178,15 +178,19 @@ restarts. See [`docs/background-mode.md`](./docs/background-mode.md).
 ## Using a `.env` file
 
 ```
-# .env
+# .env  (or .env.local)
 PROOPHBOARD_API_KEY=pb_xxxxxxxxxxxxxxxx
 ```
 
-- **Node ≥ 20.6:** `node --env-file=.env …` (or `spec-stream` loads it automatically when
-  present).
+`spec-stream` loads `.env.local` and `.env` from the working directory automatically
+(and next to the config file, if different). Precedence follows the Next.js/Vite
+convention: **real environment > `.env.local` > `.env`** — values already in the
+environment are never overridden.
+
+- **Node ≥ 20.6:** alternatively `node --env-file=.env …`.
 - **Older Node:** install the optional `dotenv` dependency.
 
-`.env` is already git-ignored in this project. **Never commit your API key**, and never
+`.env*` files should be git-ignored. **Never commit your API key**, and never
 put it in `proophboard.spec-stream.json`.
 
 ---

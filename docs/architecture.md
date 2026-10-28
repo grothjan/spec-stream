@@ -36,7 +36,7 @@ sits beside the pipeline rather than inside it.
 - Discovers `proophboard.spec-stream.json` (see [`paths.md`](./paths.md)).
 - Parses and validates it against the schema ([`config-schema.md`](./config-schema.md)).
 - Merges CLI flags (highest precedence) → config file → defaults.
-- Resolves the API key from `PROOPHBOARD_API_KEY` (env or `.env`). The key is **never**
+- Resolves the API key from `PROOPHBOARD_API_KEY` (env or `.env.local`/`.env`). The key is **never**
   read from the JSON file.
 - Fails fast with a clear message on invalid config or missing key.
 

@@ -1,25 +1,38 @@
 /**
  * Optional `.env` loading, dependency-free.
  *
- * Uses Node's built-in `process.loadEnvFile()` (Node ≥ 20.6). If it isn't available or the
- * file doesn't exist, this is a no-op — existing `process.env` values always win, and the
- * caller still falls back to whatever is already in the environment.
+ * Loads `.env.local` and `.env` from a directory (the Next.js / Vite / CRA
+ * convention). Files never override variables already present in `process.env`,
+ * so they are applied highest-precedence-first and the effective precedence is:
+ * real environment (incl. `--env-file`) > `.env.local` > `.env`.
  *
- * Only variables not already present in `process.env` are set, so real environment
- * variables and `--env-file` take precedence over the `.env` file.
+ * Uses Node's built-in `process.loadEnvFile()` (Node ≥ 20.6) when available. If a
+ * file doesn't exist it is skipped; missing files are a no-op.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+/** Files loaded, highest precedence first (first writer wins). */
+const DOTENV_FILES = [".env.local", ".env"] as const;
+
 /**
- * Load a `.env` file from `dir` into `process.env` if present.
- * Returns the path loaded, or null if nothing was loaded.
+ * Load `.env.local` and `.env` from `dir` into `process.env` if present.
+ * Returns the path of the highest-precedence file loaded, or null if none.
  */
 export function loadDotenv(dir: string = process.cwd()): string | null {
-  const path = resolve(dir, ".env");
-  if (!existsSync(path)) return null;
+  let loaded: string | null = null;
+  for (const name of DOTENV_FILES) {
+    const path = resolve(dir, name);
+    if (existsSync(path) && loadEnvFile(path)) {
+      loaded ??= path;
+    }
+  }
+  return loaded;
+}
 
+/** Load a single env file; returns true on success. */
+function loadEnvFile(path: string): boolean {
   // Prefer Node's built-in parser (Node ≥ 20.6). It sets vars into process.env.
   const nodeLoad = (process as NodeJS.Process & {
     loadEnvFile?: (p: string) => void;
@@ -34,7 +47,7 @@ export function loadDotenv(dir: string = process.cwd()): string | null {
       for (const key of Object.keys(before)) {
         if (before[key] !== undefined) process.env[key] = before[key];
       }
-      return path;
+      return true;
     } catch {
       // fall through to the minimal parser
     }
@@ -59,8 +72,8 @@ export function loadDotenv(dir: string = process.cwd()): string | null {
       }
       process.env[key] = value;
     }
-    return path;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
