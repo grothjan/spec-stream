@@ -13,6 +13,24 @@ function noopLogger(): Logger {
   return { trace: fn, debug: fn, info: fn, warn: fn, error: fn, child: () => noopLogger() } as unknown as Logger;
 }
 
+interface RecordedLog {
+  level: string;
+  kind: string;
+  fields: Record<string, unknown>;
+}
+
+/** A logger that records every call so tests can assert on emitted records. */
+function recordingLogger(): { logger: Logger; records: RecordedLog[] } {
+  const records: RecordedLog[] = [];
+  const mk = (level: string) => (kind: string, fields: Record<string, unknown> = {}) =>
+    records.push({ level, kind, fields });
+  const logger = {
+    trace: mk("trace"), debug: mk("debug"), info: mk("info"),
+    warn: mk("warn"), error: mk("error"),
+  } as unknown as Logger;
+  return { logger, records };
+}
+
 /** A manual timer harness: nothing fires until `tick()`. */
 function manualTimers(): Timers & { tick: () => void; pending: () => boolean } {
   let scheduled: (() => void) | undefined;
@@ -484,5 +502,69 @@ describe("Projection sync-back lock", () => {
     timers.tick();
     const laneAfter = JSON.parse(readFileSync(join(modelDir, "chapters/c1/lanes/l1/lane.json"), "utf8"));
     expect(laneAfter.height).toBe(150);
+  });
+});
+
+describe("Projection pruning of foreign files (issue #6)", () => {
+  /**
+   * A full seed/re-seed sweep deletes every file under `localSync.dir` that the
+   * model does not render. Before the fix this was completely silent: foreign
+   * files only surfaced as a number inside `sync.seed_done`'s `deleted` count.
+   * The projection must warn and name the deleted files.
+   */
+  it("warns and names foreign files deleted by a re-seed sweep", async () => {
+    const { logger, records } = recordingLogger();
+    const { proj } = make({ logger });
+    await proj.seed();
+
+    // Plant files the model does not own.
+    writeFileSync(join(dir, "notes.txt"), "keep-me");
+    mkdirSync(join(dir, "scratch"), { recursive: true });
+    writeFileSync(join(dir, "scratch", "a.txt"), "x");
+
+    await proj.seed(true); // rebuild → full sweep
+
+    const prune = records.find((r) => r.kind === "sync.prune");
+    expect(prune, "expected a sync.prune warning naming the deleted files").toBeTruthy();
+    expect(prune!.level).toBe("warn");
+    expect(prune!.fields.files).toEqual(expect.arrayContaining(["notes.txt"]));
+    expect(prune!.fields.files).toEqual(
+      expect.arrayContaining([expect.stringContaining("a.txt")]),
+    );
+  });
+
+  it("does not warn when a sweep deletes nothing", async () => {
+    const { logger, records } = recordingLogger();
+    const { proj } = make({ logger });
+    await proj.seed();
+    await proj.seed(true);
+    expect(records.find((r) => r.kind === "sync.prune")).toBeUndefined();
+  });
+
+  /**
+   * Variant from the issue comments: with `localSync.git: true`, defaultCommit
+   * `git init`s a history repo at the mirror root — and the next daemon start's
+   * full seed sweep used to delete that `.git`, so history never accumulated.
+   */
+  it("keeps the localSync.git history repo across a re-seed", async () => {
+    // Mirror defaultCommit: init the repo only when absent (a deleted-then-
+    // recreated repo is exactly the history loss this regression covers).
+    const gitInit = (d: string) => {
+      if (existsSync(join(d, ".git"))) return;
+      mkdirSync(join(d, ".git", "objects", "aa"), { recursive: true });
+      writeFileSync(join(d, ".git", "HEAD"), "ref: refs/heads/main\n");
+    };
+    const first = make({ git: true, commit: (d) => gitInit(d) });
+    await first.proj.seed();
+    expect(existsSync(join(dir, ".git", "HEAD"))).toBe(true);
+
+    // Accumulated history: an object the first daemon "committed".
+    writeFileSync(join(dir, ".git", "objects", "aa", "bb"), "fake-commit-object");
+
+    // Restart the daemon: its full seed sweep must not destroy the repo it made.
+    const second = make({ git: true, commit: (d) => gitInit(d) });
+    await second.proj.seed();
+    expect(existsSync(join(dir, ".git", "HEAD"))).toBe(true);
+    expect(existsSync(join(dir, ".git", "objects", "aa", "bb"))).toBe(true);
   });
 });

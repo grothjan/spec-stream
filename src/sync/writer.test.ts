@@ -100,4 +100,61 @@ describe("writeTree", () => {
     expect(readFileSync(join(root, "b/c.md"), "utf8")).toBe("9\n");
     expect(existsSync(join(root, "e.md"))).toBe(true);
   });
+
+  // ── Regression tests for proophboard/spec-stream#6 ──────────────────────────
+  // The exclusive-ownership sweep used to delete *everything* under rootDir —
+  // including `.git` directories (user repos at the mirror root, and the history
+  // repo `localSync.git` creates for itself) — and reported them only as a bare
+  // `deleted` count with no file names.
+
+  it("never touches .git directories anywhere under the root", () => {
+    writeTree(root, tree({ "model/a.json": "{}\n" }));
+    // A repo at the mirror root (user's own repo, or the localSync.git history repo).
+    mkdirSync(join(root, ".git", "objects", "ab"), { recursive: true });
+    writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(root, ".git", "objects", "ab", "cd"), "blob");
+    // A nested repo inside a model-managed directory.
+    mkdirSync(join(root, "model", ".git"), { recursive: true });
+    writeFileSync(join(root, "model", ".git", "HEAD"), "x");
+
+    const r = writeTree(root, tree({ "model/a.json": "{}\n" }));
+
+    expect(existsSync(join(root, ".git", "HEAD"))).toBe(true);
+    expect(existsSync(join(root, ".git", "objects", "ab", "cd"))).toBe(true);
+    expect(existsSync(join(root, "model", ".git", "HEAD"))).toBe(true);
+    expect(r.deleted).toBe(0);
+  });
+
+  it("preserves .git inside an explicitly deleted directory (partial mode)", () => {
+    writeTree(root, tree({ "chapters/c1/chapter.json": "{}\n" }));
+    mkdirSync(join(root, "chapters", "c1", ".git"), { recursive: true });
+    writeFileSync(join(root, "chapters", "c1", ".git", "HEAD"), "x");
+
+    writeTree(root, tree({}), { partial: true, dirsToDelete: new Set(["chapters/c1"]) });
+
+    // The entity's files are gone, but the repo inside must survive.
+    expect(existsSync(join(root, "chapters", "c1", "chapter.json"))).toBe(false);
+    expect(existsSync(join(root, "chapters", "c1", ".git", "HEAD"))).toBe(true);
+  });
+
+  it("names every swept file in filesDeleted so deletions are not silent", () => {
+    writeTree(root, tree({ "keep.md": "k\n" }));
+    writeFileSync(join(root, "stray.txt"), "nope");
+    writeFileSync(join(root, ".env"), "SECRET=1");
+    mkdirSync(join(root, "scratch"), { recursive: true });
+    writeFileSync(join(root, "scratch", "a.txt"), "x");
+
+    const r = writeTree(root, tree({ "keep.md": "k\n" }));
+
+    expect(r.deleted).toBe(3);
+    expect(r.filesDeleted).toEqual(
+      expect.arrayContaining(["stray.txt", ".env", join("scratch", "a.txt")]),
+    );
+  });
+
+  it("names explicitly deleted paths in filesDeleted (partial mode)", () => {
+    writeTree(root, tree({ "chapters/c1/chapter.json": "{}\n", "chapters/c1/index.md": "i\n" }));
+    const r = writeTree(root, tree({}), { partial: true, dirsToDelete: new Set(["chapters/c1"]) });
+    expect(r.filesDeleted).toContain("chapters/c1");
+  });
 });

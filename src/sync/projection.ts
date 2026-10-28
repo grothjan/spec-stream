@@ -344,6 +344,24 @@ export class Projection {
     }
     const result = writeTree(this.dir, tree, { partial: !full, dirsToDelete });
 
+    // A full write mirrors the tree exactly: every file under `dir` that the model
+    // does not render is deleted — including foreign files a user may have placed
+    // there. Surface those deletions loudly instead of hiding them inside the
+    // `deleted` counter (issue proophboard/spec-stream#6). `.git` directories are
+    // never touched (see writer.ts).
+    if (full && result.filesDeleted.length > 0) {
+      const MAX_LISTED = 20;
+      this.log.warn("sync.prune", {
+        dir: this.dir,
+        count: result.filesDeleted.length,
+        files: result.filesDeleted.slice(0, MAX_LISTED),
+        ...(result.filesDeleted.length > MAX_LISTED
+          ? { truncated: result.filesDeleted.length - MAX_LISTED }
+          : {}),
+        note: "deleted files that are not part of the board model — the localSync dir is exclusively managed",
+      });
+    }
+
     // Check if we need to update the sync state (cursor)
     const needsStateUpdate = this.needsStateUpdate();
 
