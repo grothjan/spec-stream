@@ -612,3 +612,274 @@ describe("App reconnect catch-up", () => {
     }
   });
 });
+
+describe("App rate-limited mirror recovery", () => {
+  /** Supabase mock identical to the reconnect suite, with a drivable status callback. */
+  function supaMock() {
+    let channel: MockChannel | undefined;
+    class MockChannel implements ChannelLike {
+      rowCb?: (p: { new: ChangelogEventRow }) => void;
+      statusCb?: (s: string) => void;
+      on(_t: "postgres_changes", _f: unknown, cb: (p: { new: ChangelogEventRow }) => void) {
+        this.rowCb = cb;
+        return this;
+      }
+      subscribe(cb: (s: string) => void) {
+        this.statusCb = cb;
+        setTimeout(() => cb("SUBSCRIBED"), 0);
+        return this;
+      }
+    }
+    const factory = (): SupabaseLike => ({
+      realtime: { setAuth: () => {} },
+      channel: () => {
+        channel = new MockChannel();
+        return channel;
+      },
+      removeChannel: () => {},
+    });
+    return {
+      factory,
+      emitRow: (r: ChangelogEventRow) => channel?.rowCb?.({ new: r }),
+      emitStatus: (s: string) => channel?.statusCb?.(s),
+    };
+  }
+
+  const TOKEN_BODY = {
+    supabase_url: "https://x.supabase.co",
+    supabase_anon_key: "anon",
+    workspace_id: "ws-1",
+    access_token: "t",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    user_id: "self-user",
+    email: "api@machine",
+  };
+
+  function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
+    const status = init.status ?? 200;
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (k: string) => init.headers?.[k.toLowerCase()] ?? null },
+      json: async () => body,
+    } as unknown as Response;
+  }
+
+  function changelogRow(id: string, createdAt = "2026-10-03T12:00:00Z"): ChangelogEventRow {
+    return {
+      id,
+      workspace_id: "ws-1",
+      chapter_id: "ch1",
+      element_id: "el1",
+      slice_id: "sl1",
+      user_id: "someone-else",
+      event_type: "element-description-changed",
+      event_data: { type: "element-description-changed", elementName: "X" },
+      created_at: createdAt,
+    };
+  }
+
+  it("retries a failed seed after the 429 Retry-After window instead of staying silently unseeded", async () => {
+    vi.useFakeTimers();
+    const tmp = mkdtempSync(join(tmpdir(), "spec-stream-seed429-"));
+    try {
+      let chaptersCalls = 0;
+      const impl = (async (url: string) => {
+        if (url.includes("/realtime-token")) return json(TOKEN_BODY);
+        if (url.includes("/chapters") && !url.includes("/chapters/")) {
+          chaptersCalls++;
+          if (chaptersCalls === 1) {
+            return json({ error: "Rate limit exceeded." }, { status: 429, headers: { "retry-after": "2" } });
+          }
+          return json([]);
+        }
+        if (url.includes("/milestones")) return json([]);
+        if (url.includes("/snippets")) return json([]);
+        if (url.includes("/scenarios")) return json([]);
+        if (url.includes("/catchup") || url.includes("/changelog")) return json([]);
+        return json({}, { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const cfg = validateConfig({
+        endpoint: "https://flow.prooph-board.com/api",
+        rules: [{ id: "spec", on: "*", run: "x" }],
+        localSync: { enabled: true, dir: tmp },
+      });
+      const { logger, records } = silentLogger();
+      const supa = supaMock();
+      const app = new App({
+        config: cfg,
+        apiKey: "pb_x",
+        logger,
+        dryRun: true,
+        fetchImpl: impl,
+        createSupabase: supa.factory,
+        rateLimiter: { minIntervalMs: 0 },
+        reorderWindowMs: 0,
+        catchUpCooldownMs: 0,
+      });
+
+      await app.start();
+      await vi.advanceTimersByTimeAsync(1);
+
+      // The first seed was rate-limited; the daemon must surface the degraded mirror
+      // and schedule a retry rather than sitting silently unseeded.
+      expect(records.find((r) => r.kind === "sync.seed_failed")).toBeDefined();
+      expect(records.find((r) => r.kind === "sync.mirror_behind")).toBeDefined();
+      expect(records.find((r) => r.kind === "sync.seed_retry")).toBeDefined();
+      expect(chaptersCalls).toBe(1);
+      const degraded = app.snapshot().localSync as { seeded?: boolean; behindSince?: string } | undefined;
+      expect(degraded?.seeded).toBe(false);
+      expect(degraded?.behindSince).toBeDefined();
+
+      // After the Retry-After window the seed is retried and succeeds.
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(chaptersCalls).toBeGreaterThanOrEqual(2);
+      expect(records.find((r) => r.kind === "sync.seed_done")).toBeDefined();
+      expect(records.find((r) => r.kind === "sync.mirror_current")).toBeDefined();
+      const recovered = app.snapshot().localSync as { seeded?: boolean; behindSince?: string } | undefined;
+      expect(recovered?.seeded).toBe(true);
+      expect(recovered?.behindSince).toBeUndefined();
+
+      await app.stop();
+    } finally {
+      vi.useRealTimers();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a rate-limited catch-up after Retry-After instead of waiting for the next reconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const catchupCalls: string[] = [];
+      let catchupAttempts = 0;
+      const impl = (async (url: string) => {
+        if (url.includes("/realtime-token")) return json(TOKEN_BODY);
+        if (url.includes("/catchup") || url.includes("/changelog")) {
+          catchupCalls.push(url);
+          catchupAttempts++;
+          if (catchupAttempts === 1) {
+            return json({ error: "Rate limit exceeded." }, { status: 429, headers: { "retry-after": "2" } });
+          }
+          return json([changelogRow("missed-1")]);
+        }
+        return json({}, { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const cfg = validateConfig({
+        endpoint: "https://flow.prooph-board.com/api",
+        rules: [{ id: "spec", on: "*", run: "x" }],
+      });
+      const { logger, records } = silentLogger();
+      const supa = supaMock();
+      const app = new App({
+        config: cfg,
+        apiKey: "pb_x",
+        logger,
+        dryRun: true,
+        fetchImpl: impl,
+        createSupabase: supa.factory,
+        rateLimiter: { minIntervalMs: 0 },
+        reorderWindowMs: 0,
+        catchUpCooldownMs: 0,
+      });
+
+      await app.start();
+      await vi.advanceTimersByTimeAsync(1); // first SUBSCRIBED
+
+      // Establish the watermark, then simulate a re-subscribe that triggers catch-up.
+      supa.emitRow(changelogRow("live-1", "2026-10-03T11:59:00Z"));
+      await vi.advanceTimersByTimeAsync(1); // flush reorder buffer → watermark set
+      supa.emitStatus("SUBSCRIBED");
+      await vi.advanceTimersByTimeAsync(10);
+
+      // The catch-up 429'd: lag must be surfaced and a retry scheduled for the
+      // Retry-After window — the live socket stays SUBSCRIBED and would otherwise
+      // never trigger another catch-up.
+      expect(catchupCalls.length).toBe(1);
+      expect(records.find((r) => r.kind === "conn.catchup_failed")).toBeDefined();
+      expect(records.find((r) => r.kind === "sync.mirror_behind")).toBeDefined();
+      expect(records.find((r) => r.kind === "conn.catchup_retry")).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(catchupCalls.length).toBe(2);
+      const catchup = records.find((r) => r.kind === "conn.catchup");
+      expect(catchup).toMatchObject({ fetched: 1, replayed: 1 });
+      expect(records.find((r) => r.kind === "sync.mirror_current")).toBeDefined();
+
+      await app.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to a full re-seed after catch-up fails a bounded number of times", async () => {
+    vi.useFakeTimers();
+    const tmp = mkdtempSync(join(tmpdir(), "spec-stream-reseed-"));
+    try {
+      let catchupAttempts = 0;
+      let chaptersCalls = 0;
+      const impl = (async (url: string) => {
+        if (url.includes("/realtime-token")) return json(TOKEN_BODY);
+        if (url.includes("/catchup") || url.includes("/changelog")) {
+          catchupAttempts++;
+          return json({ error: "Rate limit exceeded." }, { status: 429, headers: { "retry-after": "1" } });
+        }
+        if (url.includes("/chapters") && !url.includes("/chapters/")) {
+          chaptersCalls++;
+          return json([]);
+        }
+        if (url.includes("/milestones")) return json([]);
+        if (url.includes("/snippets")) return json([]);
+        if (url.includes("/scenarios")) return json([]);
+        return json({}, { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const cfg = validateConfig({
+        endpoint: "https://flow.prooph-board.com/api",
+        rules: [{ id: "spec", on: "*", run: "x" }],
+        localSync: { enabled: true, dir: tmp },
+      });
+      const { logger, records } = silentLogger();
+      const supa = supaMock();
+      const app = new App({
+        config: cfg,
+        apiKey: "pb_x",
+        logger,
+        dryRun: true,
+        fetchImpl: impl,
+        createSupabase: supa.factory,
+        rateLimiter: { minIntervalMs: 0 },
+        reorderWindowMs: 0,
+        catchUpCooldownMs: 0,
+      });
+
+      await app.start();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(chaptersCalls).toBe(1); // initial seed
+
+      supa.emitRow(changelogRow("live-1", "2026-10-03T11:59:00Z"));
+      await vi.advanceTimersByTimeAsync(1); // flush reorder buffer → watermark set
+      supa.emitStatus("SUBSCRIBED");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(catchupAttempts).toBe(1); // fail #1
+
+      // Each retry is ~1 s out (retry-after: 1). After the bounded number of
+      // consecutive failures the daemon must escalate to a full re-seed.
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(1100);
+      }
+      expect(records.find((r) => r.kind === "conn.catchup_reseed")).toBeDefined();
+      expect(chaptersCalls).toBeGreaterThanOrEqual(2); // re-seed ran
+      await vi.advanceTimersByTimeAsync(10);
+      expect(records.find((r) => r.kind === "sync.mirror_current")).toBeDefined();
+      // The 5th failure escalated; no further catch-up retries are pending.
+      expect(catchupAttempts).toBeLessThanOrEqual(5);
+
+      await app.stop();
+    } finally {
+      vi.useRealTimers();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

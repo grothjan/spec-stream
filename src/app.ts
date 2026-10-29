@@ -57,6 +57,17 @@ export interface AppOptions {
    * Defaults to false (use local model if available).
    */
   rebuild?: boolean;
+  /**
+   * Injectable backoff for seed/re-seed retries on non-rate-limit failures.
+   * Defaults to 5 s base, doubling to a 5 min cap. (429 retries always use the
+   * server's `Retry-After` instead.)
+   */
+  seedRetryBackoff?: Backoff;
+  /**
+   * Injectable backoff for catch-up retries on non-rate-limit failures.
+   * Defaults to 5 s base, doubling to a 5 min cap.
+   */
+  catchupRetryBackoff?: Backoff;
 }
 
 export class App {
@@ -97,6 +108,29 @@ export class App {
   private lastCatchUpAt = 0;
   /** Timestamp (Date.now()) until which catch-up is rate-limited and must not be retried. */
   private catchupRateLimitedUntil = 0;
+  /** Guards against overlapping seed/re-seed runs. */
+  private seeding = false;
+  /** Pending one-shot timer that retries a failed seed/re-seed. */
+  private seedRetryTimer?: ReturnType<typeof setTimeout>;
+  /** Pending one-shot timer that retries a failed catch-up. */
+  private catchupRetryTimer?: ReturnType<typeof setTimeout>;
+  /** Consecutive catch-up failures; escalates to a full re-seed past the bound. */
+  private consecutiveCatchupFailures = 0;
+  /**
+   * ISO timestamp of when the mirror first became behind/absent, or undefined when the
+   * mirror is current. Set on any seed or catch-up failure, cleared on recovery.
+   */
+  private mirrorBehindSince?: string;
+
+  private readonly seedRetryBackoff: Backoff;
+  private readonly catchupRetryBackoff: Backoff;
+
+  /** Fallback wait when a 429 carries no usable Retry-After header. */
+  private static readonly DEFAULT_RATE_LIMIT_RETRY_MS = 60_000;
+  /** Upper bound for honoring Retry-After — don't sleep for hours on a bad header. */
+  private static readonly MAX_RETRY_AFTER_MS = 30 * 60_000;
+  /** Consecutive catch-up failures that escalate to a full REST re-seed. */
+  private static readonly MAX_CATCHUP_FAILURES_BEFORE_RESEED = 5;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -117,6 +151,8 @@ export class App {
     this.reorderWindowMs = opts.reorderWindowMs;
     this.catchUpCooldownMs = opts.catchUpCooldownMs ?? 30_000;
     this.rebuild = opts.rebuild ?? false;
+    this.seedRetryBackoff = opts.seedRetryBackoff ?? new Backoff({ baseMs: 5_000, maxMs: 5 * 60_000 });
+    this.catchupRetryBackoff = opts.catchupRetryBackoff ?? new Backoff({ baseMs: 5_000, maxMs: 5 * 60_000 });
     this.router = Router.fromConfig(this.config);
     this.scheduler = new Scheduler({
       maxConcurrent: this.config.maxConcurrent,
@@ -240,14 +276,139 @@ export class App {
   }
 
   /**
+   * Mark the local mirror as behind/absent. Logged once per degradation episode as a
+   * loud warning — a daemon that reports `started`/`SUBSCRIBED` while its mirror is
+   * stale is silent data corruption for anyone reading `.spec-stream/model/`.
+   */
+  private markMirrorBehind(reason: string): void {
+    if (this.mirrorBehindSince === undefined) {
+      this.mirrorBehindSince = new Date().toISOString();
+      this.log.warn("sync.mirror_behind", {
+        reason,
+        since: this.mirrorBehindSince,
+        message:
+          "Local model mirror is absent or behind the board; entries under " +
+          "localSync.dir may be stale until sync.mirror_current is logged.",
+      });
+    }
+  }
+
+  /** Mark the mirror current again and log the recovery. */
+  private markMirrorCurrent(via: string): void {
+    if (this.mirrorBehindSince === undefined) return;
+    // A successful catch-up cannot make an unseeded mirror "current" — it replays
+    // into the in-memory model only; the pending seed retry must finish first.
+    if (this.projection && !this.projection.isSeeded) return;
+    this.log.info("sync.mirror_current", { via, wasBehindSince: this.mirrorBehindSince });
+    this.mirrorBehindSince = undefined;
+  }
+
+  /**
+   * Delay before retrying a failed REST sync: honor `Retry-After` on 429 (falling back
+   * to 60 s when absent), exponential backoff for any other failure. The backoff counter
+   * also advances on 429 so logs show escalating attempts.
+   */
+  private syncRetryDelayMs(err: unknown, backoff: Backoff): number {
+    if (err instanceof RestError && err.kind === "rate_limited") {
+      backoff.nextDelay(); // advance the attempt counter for observability
+      const retryAfterMs = err.retryAfterMs ?? App.DEFAULT_RATE_LIMIT_RETRY_MS;
+      return Math.min(retryAfterMs, App.MAX_RETRY_AFTER_MS);
+    }
+    return backoff.nextDelay();
+  }
+
+  /**
+   * Run `projection.seed()` (initial seed or full rebuild) and keep the daemon alive on
+   * failure — but never silently: every failure is surfaced via `sync.mirror_behind`
+   * and a retry is scheduled. On success the persisted cursor is carried into the
+   * in-memory catch-up watermark and the mirror is marked current.
+   */
+  private async seedProjection(rebuild: boolean): Promise<void> {
+    if (!this.projection || this.stopped || this.seeding) return;
+    this.seeding = true;
+    try {
+      await this.projection.seed(rebuild);
+      this.seedRetryBackoff.reset();
+      this.consecutiveCatchupFailures = 0;
+      // Carry the persisted cursor into the in-memory catch-up watermark so a reconnect
+      // that happens before any live event still replays from the last synced position.
+      const state = this.projection.readSyncState();
+      if (state && state.cursor.lastCreatedAt) {
+        this.lastEventCreatedAt = state.cursor.lastCreatedAt;
+        this.lastEventId = state.cursor.lastEventId;
+        this.log.info("sync.resumed", { since: state.cursor.lastCreatedAt, eventId: this.lastEventId });
+      }
+      this.markMirrorCurrent(rebuild ? "reseed" : "seed");
+    } catch (err) {
+      // Seeding failure is non-fatal for the stream: live events still apply, but the
+      // mirror must not be left silently absent — surface the lag and schedule a retry.
+      this.log.error("sync.seed_failed", { message: (err as Error).message });
+      this.markMirrorBehind(rebuild ? "reseed_failed" : "seed_failed");
+      this.scheduleSeedRetry(err, rebuild);
+    } finally {
+      this.seeding = false;
+    }
+  }
+
+  /** Schedule a one-shot seed retry. At most one pending retry at a time. */
+  private scheduleSeedRetry(err: unknown, rebuild: boolean): void {
+    if (this.stopped || this.seedRetryTimer) return;
+    const delayMs = this.syncRetryDelayMs(err, this.seedRetryBackoff);
+    this.log.warn("sync.seed_retry", {
+      attempt: this.seedRetryBackoff.attempts,
+      delayMs,
+      retryAt: new Date(Date.now() + delayMs).toISOString(),
+      reason: err instanceof RestError && err.kind === "rate_limited" ? "rate_limited" : "error",
+    });
+    this.seedRetryTimer = setTimeout(() => {
+      this.seedRetryTimer = undefined;
+      void this.seedProjection(rebuild);
+    }, delayMs);
+  }
+
+  /**
+   * Schedule a one-shot catch-up retry after a failure. Without this, a failed
+   * catch-up would only ever be re-attempted on the next SUBSCRIBED event — but a
+   * 429 on the REST API does not drop the realtime socket, so the mirror would stay
+   * behind indefinitely while the connection reports healthy.
+   */
+  private scheduleCatchupRetry(err: unknown): void {
+    if (this.stopped || this.catchupRetryTimer) return;
+    const delayMs = this.syncRetryDelayMs(err, this.catchupRetryBackoff);
+    this.log.warn("conn.catchup_retry", {
+      attempt: this.catchupRetryBackoff.attempts,
+      delayMs,
+      retryAt: new Date(Date.now() + delayMs).toISOString(),
+      reason: err instanceof RestError && err.kind === "rate_limited" ? "rate_limited" : "error",
+    });
+    this.catchupRetryTimer = setTimeout(() => {
+      this.catchupRetryTimer = undefined;
+      // Bypass the cooldown guard: this invocation IS the scheduled retry — a
+      // SUBSCRIBED-triggered attempt may have run within the cooldown window.
+      this.lastCatchUpAt = 0;
+      void this.catchUp();
+    }, delayMs);
+  }
+
+  private cancelCatchupRetry(): void {
+    if (this.catchupRetryTimer) {
+      clearTimeout(this.catchupRetryTimer);
+      this.catchupRetryTimer = undefined;
+    }
+  }
+
+  /**
    * Replay changelog events missed during a disconnect. Fetches events created on/after
    * the last processed timestamp and feeds them through {@link onEvent} (which dedupes the
    * boundary overlap and applies to the projection + router). Best-effort: failures are
    * logged and the live stream still resumes. Runs on each successful RE-subscribe.
    *
    * On 429 Too Many Requests: respects the `Retry-After` header (or falls back to 60 s)
-   * and refuses to re-attempt until that window passes. The live realtime connection is
-   * NOT closed — only the catch-up poll is suppressed until the rate limit clears.
+   * and refuses to re-attempt until that window passes — then a timer-driven retry runs
+   * the catch-up (the live socket is NOT closed, so waiting for the next SUBSCRIBED
+   * could leave the mirror behind indefinitely). After
+   * {@link App.MAX_CATCHUP_FAILURES_BEFORE_RESEED} consecutive failures the daemon
+   * falls back to a full REST re-seed rather than staying permanently behind.
    *
    * **Cooldown guard:** at most one catch-up per `catchUpCooldownMs` (default 30 s).
    * Reconnect storms (many SUBSCRIBED events in quick succession) are collapsed into a
@@ -346,12 +507,20 @@ export class App {
       this.lastEventId = latestEventId;
       this.lastEventCreatedAt = latestCreatedAt;
       this.log.info("conn.catchup", { since, fetched: rows.length, replayed });
+      this.consecutiveCatchupFailures = 0;
+      this.catchupRetryBackoff.reset();
+      this.cancelCatchupRetry();
+      this.markMirrorCurrent("catchup");
     } catch (err) {
+      this.consecutiveCatchupFailures++;
+      this.markMirrorBehind("catchup_failed");
       if (err instanceof RestError && err.kind === "rate_limited") {
         // Prooph board rate limit: 120 req/min or 1000 req/hr.
         // Honor the Retry-After header; default to 60 s if absent.
-        const DEFAULT_RETRY_AFTER_MS = 60_000;
-        const retryAfterMs = err.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS;
+        const retryAfterMs = Math.min(
+          err.retryAfterMs ?? App.DEFAULT_RATE_LIMIT_RETRY_MS,
+          App.MAX_RETRY_AFTER_MS,
+        );
         this.catchupRateLimitedUntil = Date.now() + retryAfterMs;
         this.log.warn("conn.catchup_failed", {
           since,
@@ -359,10 +528,23 @@ export class App {
           retryAfterMs,
           retryAt: new Date(this.catchupRateLimitedUntil).toISOString(),
         });
-        // Do NOT close or reconnect — the live stream stays up. Catch-up will
-        // be re-attempted on the next SUBSCRIBED event after the window passes.
+        // Do NOT close or reconnect — the live stream stays up. The retry is
+        // scheduled for when the window expires (not left to the next SUBSCRIBED,
+        // which may never come while the socket stays healthy).
       } else {
         this.log.warn("conn.catchup_failed", { since, message: (err as Error).message });
+      }
+      if (this.consecutiveCatchupFailures >= App.MAX_CATCHUP_FAILURES_BEFORE_RESEED) {
+        // Floor: incremental catch-up can't keep up — fall back to the idempotent
+        // full REST re-seed (whose own retries honor Retry-After until it succeeds).
+        this.log.warn("conn.catchup_reseed", {
+          failures: this.consecutiveCatchupFailures,
+          message: "Catch-up keeps failing — falling back to a full model re-seed.",
+        });
+        this.consecutiveCatchupFailures = 0;
+        void this.seedProjection(true);
+      } else {
+        this.scheduleCatchupRetry(err);
       }
     } finally {
       this.catchingUp = false;
@@ -512,21 +694,9 @@ export class App {
         rebuildOnStart: this.config.localSync.rebuildOnStart,
         git: this.config.localSync.git,
       });
-      try {
-        await this.projection.seed(this.rebuild);
-        // Carry the persisted cursor into the in-memory catch-up watermark so a reconnect
-        // that happens before any live event still replays from the last synced position.
-        const state = this.projection.readSyncState();
-        if (state && state.cursor.lastCreatedAt) {
-          this.lastEventCreatedAt = state.cursor.lastCreatedAt;
-          this.lastEventId = state.cursor.lastEventId;
-          this.log.info("sync.resumed", { since: state.cursor.lastCreatedAt, eventId: this.lastEventId });
-        }
-      } catch (err) {
-        // Seeding failure is non-fatal: log and continue. Live events will still apply,
-        // and a later rebuild can reconcile.
-        this.log.error("sync.seed_failed", { message: (err as Error).message });
-      }
+      // Seeding failure is non-fatal for the stream but never silent: seedProjection
+      // surfaces `sync.mirror_behind` and retries until the mirror exists.
+      await this.seedProjection(this.rebuild);
     }
 
     // Buffer incoming realtime events for a short window so that events emitted within
@@ -555,6 +725,8 @@ export class App {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.renewTimer) clearTimeout(this.renewTimer);
+    if (this.seedRetryTimer) clearTimeout(this.seedRetryTimer);
+    this.cancelCatchupRetry();
     await this.realtime?.disconnect();
     // Flush any events still sitting in the reorder buffer before shutting down.
     this.reorderBuffer?.flush();
@@ -584,7 +756,9 @@ export class App {
       workspaceId: this.token?.workspaceId,
       ...this.stats,
       scheduler: this.scheduler.stats(),
-      localSync: this.projection?.snapshot(),
+      localSync: this.projection
+        ? { ...this.projection.snapshot(), behindSince: this.mirrorBehindSince }
+        : undefined,
     };
   }
 }
