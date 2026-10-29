@@ -12,7 +12,8 @@ from spec-stream's side.
   recommended for spec-stream.**
 - Treated as a **secret**. `spec-stream` reads it only from the environment:
   - `PROOPHBOARD_API_KEY` in `process.env`, or
-  - a `.env` file in the working directory (loaded via Node's `--env-file` on
+  - `.env.local` / `.env` files in the working directory (precedence: real
+    environment > `.env.local` > `.env`; alternatively Node's `--env-file` on
     Node ≥ 20.6, or an optional `dotenv` dependency on older Node).
 - It is **never** stored in `proophboard.spec-stream.json` and is **never** logged
   (any `pb_…` value is redacted in output).
@@ -20,7 +21,7 @@ from spec-stream's side.
 ## Startup flow
 
 ```
-1. Read PROOPHBOARD_API_KEY from env/.env
+1. Read PROOPHBOARD_API_KEY from env/.env.local/.env
         │
 2. POST {endpoint}/realtime-token  (Authorization: Bearer pb_…)
         │  ← { supabase_url, supabase_anon_key, workspace_id, user_id, email,

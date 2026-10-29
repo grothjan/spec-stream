@@ -23,8 +23,9 @@ default base for `cwd` and project-mode logs.
 The API key is resolved separately and only from the environment:
 
 1. `PROOPHBOARD_API_KEY` in `process.env`.
-2. A `.env` file in the CWD (Node ≥ 20.6: run with `--env-file=.env`; older Node: the
-   optional `dotenv` dependency).
+2. `.env.local` / `.env` files in the CWD (and next to the config file, if different).
+   Precedence: real environment > `.env.local` > `.env`. (Node ≥ 20.6: alternatively
+   run with `--env-file=.env`; older Node: the optional `dotenv` dependency.)
 
 It is never read from `proophboard.spec-stream.json`. See
 [`authentication.md`](./authentication.md).
@@ -85,6 +86,6 @@ On Windows the equivalent is `%LOCALAPPDATA%\spec-stream\`.
 | Item | Project mode | Daemon/user mode | Override |
 |------|--------------|------------------|----------|
 | Config | `proophboard.spec-stream.json` (CWD up to root) | same | `--config` |
-| API key | `PROOPHBOARD_API_KEY` / `.env` | same | env only |
+| API key | `PROOPHBOARD_API_KEY` / `.env.local` / `.env` | same | env only |
 | Logs | `<config-dir>/.spec-stream/logs/` | `${XDG_STATE_HOME:-~/.local/state}/spec-stream/logs/` | `logDir` / `--log-dir` |
 | PID | `<config-dir>/.spec-stream/spec-stream.pid` | `${XDG_STATE_HOME:-~/.local/state}/spec-stream/spec-stream.pid` | `--state-dir` |

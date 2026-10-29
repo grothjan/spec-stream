@@ -46,4 +46,25 @@ describe("loadDotenv", () => {
     loadDotenv(dir);
     expect(process.env[KEY]).toBe("abc");
   });
+
+  it("loads values from a .env.local file", () => {
+    writeFileSync(join(dir, ".env.local"), `${KEY}=pb_local\n`);
+    const loaded = loadDotenv(dir);
+    expect(loaded).toBe(join(dir, ".env.local"));
+    expect(process.env[KEY]).toBe("pb_local");
+  });
+
+  it("prefers .env.local over .env (Next.js convention)", () => {
+    writeFileSync(join(dir, ".env"), `${KEY}=pb_dotenv\n`);
+    writeFileSync(join(dir, ".env.local"), `${KEY}=pb_local\n`);
+    loadDotenv(dir);
+    expect(process.env[KEY]).toBe("pb_local");
+  });
+
+  it("still lets a real env var win over .env.local", () => {
+    process.env[KEY] = "pb_fromenv";
+    writeFileSync(join(dir, ".env.local"), `${KEY}=pb_local\n`);
+    loadDotenv(dir);
+    expect(process.env[KEY]).toBe("pb_fromenv");
+  });
 });
