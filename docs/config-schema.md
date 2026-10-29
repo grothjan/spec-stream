@@ -149,6 +149,10 @@ on the next update. Full design and the file layout are in [`local-sync.md`](./l
 | `rebuildOnStart` | boolean | `false` | Wipe `dir` and re-render the whole tree from a fresh model fetch instead of catching up from the sync cursor. Always safe (the tree is a replica). |
 | `git` | boolean | `false` | Commit each projection update to a git repo in `dir`. Purely for human-browsable history — not required for correctness. |
 
+- `dir` is **exclusively managed** by spec-stream: every full write (seed, rebuild)
+  deletes any file under it that is not part of the rendered model. Such deletions are
+  logged **by name** as a `sync.prune` warning. `.git` directories are never touched —
+  a repo at the mirror root (yours, or the `git: true` history repo) survives rebuilds.
 - When `localSync.enabled` is `true`, `rules` **may be empty** — spec-stream can run as a
   projection-only process with no command rules.
 - The projection applies **all** events (including spec-stream's own writes), so the mirror

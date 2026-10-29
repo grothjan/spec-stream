@@ -293,6 +293,14 @@ Snippets are also fetched on cold start via `GET /snippets` and seeded as synthe
 
 - **Rebuild is always correct.** `spec-stream sync --rebuild` (or on `schemaVersion`
   bump / corruption) wipes `.spec-stream/model/` and re-renders from a fresh model fetch.
+- **The mirror dir is exclusively managed.** A full write deletes any file under
+  `localSync.dir` that is not part of the rendered model — including foreign files a
+  user placed there. Every such deletion is logged **by name** as a `sync.prune`
+  warning (count + file list), never silently folded into the `deleted` counter.
+- **`.git` is always safe.** `listFiles` never descends into `.git` directories, the
+  empty-dir pruner never removes them, and explicit entity-dir deletes preserve them —
+  so a repo at the mirror root (yours, or the `localSync.git` history repo) survives
+  every write.
 - **Diff-based writes** keep the tree stable and git-friendly; unchanged files are not
   rewritten.
 - **Generated marker.** Each generated file carries a header/comment (or a top-level

@@ -329,6 +329,10 @@ On the next `spec-stream run` (or `start`), it fetches the full workspace via th
 API, writes the initial file tree, then applies every incoming changelog event
 incrementally. Restarts catch up on missed events automatically.
 
+The model dir is **exclusively managed**: a full write deletes anything under it that
+is not part of the board model. Deletions are logged by name as a `sync.prune`
+warning, and `.git` directories are never touched.
+
 *Use `npx @proophboard/spec-stream --verbose` to get a detailed list of file changes.*
 
 ### What gets written

@@ -7,6 +7,11 @@
  * is deleted, and empty directories are pruned. This makes the tree a faithful mirror —
  * renames and removals clean up after themselves.
  *
+ * One exception to exclusive ownership: {@link PROTECTED_DIRS} (`.git`) are never
+ * enumerated, deleted, or pruned. Users commonly keep the mirror under version control,
+ * and `localSync.git` itself creates a history repo at the mirror root — deleting it
+ * would silently destroy repositories (see proophboard/spec-stream#6).
+ *
  * Writes are diff-based: a file is only rewritten when its content actually changed, so an
  * unchanged projection touches nothing on disk (clean git history, no needless churn).
  *
@@ -26,6 +31,17 @@ import {
 } from "node:fs";
 import { join, resolve, dirname, relative, sep } from "node:path";
 import type { DesiredTree } from "./render.js";
+
+/**
+ * Directory names that are never touched by the writer — not listed, not deleted,
+ * not pruned — even though they are not part of the desired tree. `.git` protects
+ * both a user's own repo at the mirror root and the history repo that
+ * `localSync.git` creates there (projection's `defaultCommit` runs `git init` in
+ * the dir; without this guard the next sweep would delete it again).
+ */
+const PROTECTED_DIRS = new Set([".git"]);
+
+const isProtectedDir = (name: string): boolean => PROTECTED_DIRS.has(name);
 
 /** Breakdown of what files were changed by type */
 export interface ChangeBreakdown {
@@ -133,6 +149,7 @@ export function writeTree(
     rmSync(abs, { force: true });
     result.deleted++;
     result.byType.other++;
+    result.filesDeleted.push(relative(root, abs));
   }
 
   // 1b. Explicit deletes for entities removed on the board (used in partial mode).
@@ -143,9 +160,10 @@ export function writeTree(
       const abs = resolve(root, rel);
       if (!isInside(root, abs)) continue;
       try {
-        rmSync(abs, { recursive: true, force: true });
+        removePreservingProtectedDirs(abs);
         result.deleted++;
         result.byType.other++;
+        result.filesDeleted.push(rel);
       } catch { /* already gone — ignore */ }
     }
   }
@@ -225,13 +243,14 @@ function trackChangeByType(byType: ChangeBreakdown, relPath: string): void {
   }
 }
 
-/** Recursively collect all file paths under `dir` (absolute). */
+/** Recursively collect all file paths under `dir` (absolute), skipping protected dirs. */
 function listFiles(dir: string): string[] {
   const out: string[] = [];
   if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (isProtectedDir(entry.name)) continue;
       out.push(...listFiles(abs));
     } else if (entry.isFile()) {
       out.push(abs);
@@ -241,13 +260,18 @@ function listFiles(dir: string): string[] {
   return out;
 }
 
-/** Remove empty directories under `dir`, bottom-up. Never removes `keep` (the root). */
+/** Remove empty directories under `dir`, bottom-up. Never removes `keep` (the root)
+ *  or any protected directory (a `.git` also keeps its parents from looking empty). */
 function pruneEmptyDirs(dir: string, keep: string): boolean {
   let empty = true;
   if (!existsSync(dir)) return true;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (isProtectedDir(entry.name)) {
+        empty = false;
+        continue;
+      }
       const childEmpty = pruneEmptyDirs(abs, keep);
       if (childEmpty) {
         rmSync(abs, { recursive: true, force: true });
@@ -259,6 +283,35 @@ function pruneEmptyDirs(dir: string, keep: string): boolean {
     }
   }
   return empty && dir !== keep;
+}
+
+/**
+ * Remove `abs` (a file or directory), never touching protected directories inside
+ * it. Returns `true` when nothing of `abs` remains; when a `.git` survives, the
+ * directory chain leading to it is kept so the repo is left intact.
+ */
+function removePreservingProtectedDirs(abs: string): boolean {
+  let isDir = false;
+  try {
+    isDir = statSync(abs).isDirectory();
+  } catch {
+    return true; // already gone
+  }
+  if (!isDir) {
+    rmSync(abs, { force: true });
+    return true;
+  }
+  let empty = true;
+  for (const entry of readdirSync(abs, { withFileTypes: true })) {
+    const child = join(abs, entry.name);
+    if (entry.isDirectory() && isProtectedDir(entry.name)) {
+      empty = false;
+      continue;
+    }
+    if (!removePreservingProtectedDirs(child)) empty = false;
+  }
+  if (empty) rmSync(abs, { recursive: true, force: true });
+  return empty;
 }
 
 export function readIfExists(abs: string): string | undefined {
